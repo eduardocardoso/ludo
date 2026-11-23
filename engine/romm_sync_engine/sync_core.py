@@ -1737,6 +1737,18 @@ def standalone_emulator_for_platform(platform_name, platform_slug=None):
     return None
 
 
+def installs_switch_add_ons(platform_slug, platform_name=None):
+    """True unless the platform routes to an emulator other than Eden.
+
+    Add-on install writes into Eden's NAND. A Switch 2 Edition upgrade is a
+    switch-2 ROM whose container carries a Switch ("01") ID, which the "04"
+    filter in title_ids cannot catch; the Platform's route can. A platform
+    with no route at all keeps today's behaviour.
+    """
+    match = standalone_emulator_for_platform(platform_name, platform_slug)
+    return match is None or match[0] == 'eden'
+
+
 def standalone_routes():
     """{lowercase platform slug or name: standalone emulator key}.
 
@@ -20452,7 +20464,9 @@ class CollectionSyncManager:
                 # A Switch update or DLC is inert until it is in Eden's
                 # registered cache, so arriving is not the end of the job the
                 # way it is for every other file here. No-op for anything else.
-                if local_path.suffix.lower() in ('.nsp', '.xci'):
+                if (local_path.suffix.lower() in ('.nsp', '.xci')
+                        and installs_switch_add_ons(rom.get('platform_slug'),
+                                                    rom.get('platform_name'))):
                     self.install_switch_add_on(local_path)
                 downloaded_count += rom_file_count
                 sync_done += 1

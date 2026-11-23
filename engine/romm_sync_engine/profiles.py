@@ -209,7 +209,8 @@ def steam_config_dir():
 #
 # Eden keeps saves per Switch user, so each profile plays as its own Eden
 # user: the first profile keeps the user Eden already had selected, every
-# other profile gets one Ludo adds (named after the profile). Launches pass
+# other profile adopts the user already named after it or gets one Ludo adds
+# (named after the profile). Launches pass
 # that user with -u, and sync only looks at that user's save folder.
 
 def profiles_in_use():
@@ -254,6 +255,23 @@ def _first_eden_user_list(data_dir=None, variant=EDEN):
     return [target] if eden_users.users(target) is not None else []
 
 
+def _user_named_after(entry, data, listed, variant):
+    """The id of a listed Emulator user whose name is exactly the profile's
+    name or username, or None.
+
+    Players who made one user per family member by hand keep that user and
+    its saves instead of getting a duplicate. Only an exact, case-sensitive
+    match counts: a near match could hand over someone else's saves. A user
+    another profile already plays as is never shared.
+    """
+    wanted = {entry.get('name'), entry.get('username')} - {None, ''}
+    taken = {p.get(variant.profile_key) for p in data['profiles'] if p is not entry}
+    for user in listed:
+        if user['name'] in wanted and user['uuid'] not in taken:
+            return user['uuid']
+    return None
+
+
 def eden_user(create=False, data_dir=None, variant=EDEN):
     """The Eden user the current profile plays as.
 
@@ -296,6 +314,12 @@ def eden_user(create=False, data_dir=None, variant=EDEN):
         uuid = chosen['uuid']
         entry[variant.profile_key] = uuid
         save(data)
+    if not uuid:
+        adopted = _user_named_after(entry, data, eden_users.users(dirs[0]) or [], variant)
+        if adopted:
+            uuid = adopted
+            entry[variant.profile_key] = uuid
+            save(data)
     missing = [d for d in dirs if eden_users.find(d, uuid) is None] if uuid else dirs
     if missing:
         if not create:

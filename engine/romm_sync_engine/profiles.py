@@ -233,7 +233,7 @@ def _variant_kw(variant):
 def _eden_dirs(variant=EDEN):
     from . import eden_users, emulator_saves
     return [d for d in emulator_saves.eden_data_dirs(**_variant_kw(variant))
-            if eden_users.users(d) is not None]
+            if eden_users.users(d, **_variant_kw(variant)) is not None]
 
 
 def _first_eden_user_list(data_dir=None, variant=EDEN):
@@ -252,7 +252,7 @@ def _first_eden_user_list(data_dir=None, variant=EDEN):
     except OSError as e:
         logging.warning(f"Could not create {variant.name}'s user list in {target}: {e}")
         return []
-    return [target] if eden_users.users(target) is not None else []
+    return [target] if eden_users.users(target, **kw) is not None else []
 
 
 def _users_taken(entry, data, variant):
@@ -308,7 +308,7 @@ def eden_user(create=False, data_dir=None, variant=EDEN):
     if not uuid and current == DEFAULT:
         # The first profile keeps whoever Eden had selected: their saves are
         # already under that user.
-        listed = eden_users.users(dirs[0]) or []
+        listed = eden_users.users(dirs[0], **kw) or []
         try:
             index = int(eden_config._setting('[System]', 'current_user', **kw) or 0)
         except ValueError:
@@ -326,12 +326,12 @@ def eden_user(create=False, data_dir=None, variant=EDEN):
             entry[variant.profile_key] = uuid
             save(data)
     if not uuid:
-        adopted = _user_named_after(entry, data, eden_users.users(dirs[0]) or [], variant)
+        adopted = _user_named_after(entry, data, eden_users.users(dirs[0], **kw) or [], variant)
         if adopted:
             uuid = adopted
             entry[variant.profile_key] = uuid
             save(data)
-    missing = [d for d in dirs if eden_users.find(d, uuid) is None] if uuid else dirs
+    missing = [d for d in dirs if eden_users.find(d, uuid, **kw) is None] if uuid else dirs
     if missing:
         if not create:
             return {'error': f'This profile has no {label} user yet'}
@@ -356,7 +356,7 @@ def eden_launch_index(data_dir, variant=EDEN):
     if not user or 'uuid' not in user:
         return None
     from . import eden_users
-    found = eden_users.find(data_dir, user['uuid'])
+    found = eden_users.find(data_dir, user['uuid'], **_variant_kw(variant))
     return found['index'] if found else None
 
 

@@ -35,6 +35,9 @@ export type EmuStatus = {
   // Emulators outside RetroArch that own a platform outright (Eden for Switch).
   // Independent of `installed` above: their games play with no RetroArch here.
   standalone: EmuStandalone[];
+  // Which of them runs each platform: lowercase platform slug or name -> key.
+  // The backend's own routing table, so the UI never matches names itself.
+  standalone_routes: Record<string, string>;
   save_dirs: Record<string, string>;
   retroarch_save_dir?: string;
   bios_dir: string;
@@ -53,8 +56,6 @@ export type EmuStatus = {
 
 export type EmuStandalone = {
   key: string; name: string; installed: boolean; executable: string;
-  // Lowercase tokens matched against a game's platform name and slug.
-  platforms: string[];
 };
 
 // ── Emulator status ─────────────────────────────────────────────────────────
@@ -95,6 +96,7 @@ export async function loadEmulatorStatus(refresh = false): Promise<EmuStatus | n
           core_count: r.core_count || 0,
           stale_paths: r.stale_paths || [],
           standalone: r.standalone || [],
+          standalone_routes: r.standalone_routes || {},
           save_dirs: r.save_dirs || {},
           retroarch_save_dir: r.retroarch_save_dir || '',
           bios_dir: r.bios_dir || '',
@@ -225,15 +227,20 @@ export function installSize(s: EmuInstall): string {
 }
 
 // The standalone emulator that owns a game's platform, installed or not — Eden
-// for a Switch ROM. Matched on the same tokens the backend uses, against both
-// the platform name and its slug, so "Nintendo Switch" and "switch" both hit.
+// for a Switch ROM, Lichii for a Switch 2 one. A lookup in the backend's own
+// routing table, slug first as the backend does, so what the UI says and what
+// launches never disagree. Exact: "Nintendo Switch 2" is not "Nintendo Switch".
 export function standaloneFor(status: EmuStatus | null,
                        platform?: string | null,
                        slug?: string | null): EmuStandalone | null {
-  if (!status?.standalone?.length) return null;
-  const hay = `${platform || ''} ${slug || ''}`.toLowerCase();
-  if (!hay.trim()) return null;
-  return status.standalone.find((s) => s.platforms.some((p) => hay.includes(p))) || null;
+  const routes = status?.standalone_routes;
+  if (!status?.standalone?.length || !routes) return null;
+  const route = (v?: string | null) => {
+    const k = (v || '').trim().toLowerCase();
+    return k && Object.prototype.hasOwnProperty.call(routes, k) ? routes[k] : undefined;
+  };
+  const key = route(slug) ?? route(platform);
+  return (key && status.standalone.find((s) => s.key === key)) || null;
 }
 
 // ─── Per-platform sync ───────────────────────────────────────────────────────

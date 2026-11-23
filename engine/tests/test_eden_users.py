@@ -131,6 +131,29 @@ class EdenUsersTest(unittest.TestCase):
             self.assertEqual(RetroArchInterface._eden_user_args('/usr/bin/eden'), ['-u', '0'])
         self.assertIn('select_user_on_boot=false', config.read_text().splitlines())
 
+    def test_launch_turns_off_the_picker_of_the_install_it_launches(self):
+        """With a flatpak and an AppImage Eden both configured, only the
+        launched one's qt-config.ini is edited."""
+        from romm_sync_engine.sync_core import RetroArchInterface
+        on = '[UI]\nselect_user_on_boot\\default=false\nselect_user_on_boot=true\n'
+        native = self.home / '.config/eden/qt-config.ini'
+        flatpak = self.home / '.var/app/dev.eden_emu.eden/config/eden/qt-config.ini'
+        for config in (native, flatpak):
+            config.parent.mkdir(parents=True)
+            config.write_text(on)
+        write_profiles_dat(self.home / '.var/app/dev.eden_emu.eden/data/eden',
+                           [(COVIN, 'covin'), (SECOND, 'guest')])
+        P.create('Mia')
+        with patch.object(eden_config, 'eden_is_running', return_value=False):
+            self.assertEqual(RetroArchInterface._eden_user_args('/usr/bin/eden'), ['-u', '0'])
+            self.assertIn('select_user_on_boot=false', native.read_text().splitlines())
+            self.assertEqual(flatpak.read_text(), on)
+            native.write_text(on)
+            self.assertEqual(RetroArchInterface._eden_user_args('flatpak:dev.eden_emu.eden'),
+                             ['-u', '0'])
+            self.assertIn('select_user_on_boot=false', flatpak.read_text().splitlines())
+            self.assertEqual(native.read_text(), on)
+
     def test_a_running_eden_or_a_missing_user_file_leaves_saves_alone(self):
         mia = P.create('Mia')
         self.use(mia)

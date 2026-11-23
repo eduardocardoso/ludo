@@ -67,6 +67,12 @@ Lichii starts with `-u` for it. The first profile keeps the user selected in
 Lichii's own settings. Ludo only changes Lichii's user list while Lichii is
 closed.
 
+If Eden's or Lichii's user list already has a user named exactly like a
+profile (its name or its username, same capitals and spaces), that profile
+plays as that user the first time instead of getting a new one, so users made
+by hand keep their saves. A user another profile already plays as is not
+reused, and a profile that already has its user never switches to another.
+
 A save belongs to the emulator its game launches in. Ludo uploads Switch 2
 saves from Lichii, labelled `Lichii`, and Switch saves from Eden, labelled
 `Eden`. Lichii can also run Switch 1 games, but Switch 1 saves made in Lichii

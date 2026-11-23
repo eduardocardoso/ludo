@@ -9495,7 +9495,11 @@ class RetroArchInterface:
                 return []
             data_dir = emulator_saves.eden_data_dir_for(executable)
             index = profiles.eden_launch_index(data_dir)
-            return ['-u', str(index)] if index is not None else []
+            if index is None:
+                return []
+            # Eden's boot user picker would override -u.
+            eden_config.disable_select_user_on_boot()
+            return ['-u', str(index)]
         except Exception as e:
             logging.warning(f"Eden user for this profile unavailable: {e}")
             return []

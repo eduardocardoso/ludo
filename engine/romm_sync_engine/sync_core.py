@@ -19,6 +19,7 @@ from .paths import app_id, cache_dir, client_name, config_dir, library_dir, mach
 from .process_lock import ProcessLock
 from .owned_tasks import OwnedTasks
 from .save_channels import snapshots_supported
+from .eden_family import EDEN, variant_for_key
 from . import events as _events
 from . import (cemu_saves, eden_config, emulator_saves, folder_saves, gamecube_saves,
                play_sessions, ps2_memcard, save_channels, switch_content, switch_nsz,
@@ -9523,22 +9524,26 @@ class RetroArchInterface:
         return out
 
     @staticmethod
-    def _eden_user_args(executable):
-        """-u <n> so Eden plays as the current profile's own Switch user, whose
-        saves are the ones this profile syncs. Empty without profiles."""
+    def _eden_user_args(executable, variant=EDEN):
+        """-u <n> so an Eden-family emulator (Eden by default) plays as the
+        current profile's own Switch user, whose saves are the ones this
+        profile syncs. Empty without profiles."""
         from . import profiles
+        # Eden's calls stay exactly as they were (tests stub these helpers
+        # with narrow lambdas); only another variant is named.
+        kw = {} if variant is EDEN else {'variant': variant}
         try:
             if not profiles.profiles_in_use():
                 return []
-            data_dir = emulator_saves.eden_data_dir_for(executable)
-            index = profiles.eden_launch_index(data_dir)
+            data_dir = emulator_saves.eden_data_dir_for(executable, **kw)
+            index = profiles.eden_launch_index(data_dir, **kw)
             if index is None:
                 return []
-            # Eden's boot user picker would override -u.
-            eden_config.disable_select_user_on_boot()
+            # The boot user picker would override -u.
+            eden_config.disable_select_user_on_boot(**kw)
             return ['-u', str(index)]
         except Exception as e:
-            logging.warning(f"Eden user for this profile unavailable: {e}")
+            logging.warning(f"{variant.name} user for this profile unavailable: {e}")
             return []
 
     @staticmethod
@@ -9558,8 +9563,11 @@ class RetroArchInterface:
         if spec.get('resolve_rom') == 'wiiu':
             rom_path, grant_root = resolve_wiiu_rom(rom_path)
         args = [a.replace('{rom}', str(rom_path)) for a in spec['args']]
-        if key == 'eden':
+        variant = variant_for_key(key)
+        if variant is EDEN:
             args = self._eden_user_args(executable) + args
+        elif variant is not None:
+            args = self._eden_user_args(executable, variant) + args
         elif key == 'cemu':
             args = self._cemu_account_args(executable) + args
         if spec.get('prelaunch') == 'cemu_audio_repair':
@@ -13619,6 +13627,34 @@ class AutoSyncManager:
         self.available_games = games
         self.get_games = lambda: games
 
+    @staticmethod
+    def _standalone_emulators_running():
+        """{label: running} for each standalone emulator Ludo watches.
+
+        Nothing else sees these games end: a running one keeps the play
+        session open, and its exit is the session boundary that syncs saves.
+        Lichii has its own check, so a running Eden is never taken for it.
+        """
+        return {
+            'Eden': emulator_saves.eden_is_running(),
+            'Lichii': emulator_saves.lichii_is_running(),
+            'Cemu': emulator_saves.cemu_is_running(),
+        }
+
+    def _note_standalone_transitions(self, was, now):
+        """Log each standalone emulator that started or stopped since ``was``,
+        and sync saves when one closes: a Switch or Wii U save is final once
+        its emulator exits. Returns ``now``, the next call's ``was``."""
+        for label, running in now.items():
+            if running == was.get(label, False):
+                continue
+            if running:
+                self.log(f"🎮 {label} launched")
+            else:
+                self.log(f"🎮 {label} closed")
+                self.trigger_session_save_sync(f"{label} closed")
+        return now
+
     def start_retroarch_monitoring(self):
         """Enhanced monitoring: prioritize network detection over history"""
         def monitor_retroarch():
@@ -13628,8 +13664,7 @@ class AutoSyncManager:
             # Seeded False so that an Eden already open when monitoring starts
             # still produces a close transition, rather than being mistaken for
             # a state we have already handled.
-            eden_was_running = False
-            cemu_was_running = False
+            standalone_was_running = {}
             last_network_state = False  # Local variable, not self._last_network_state
             startup_grace_period = True
             network_retry_count = 0
@@ -13666,9 +13701,8 @@ class AutoSyncManager:
                     # sitting on disk from 11:56 and not uploading until 14:05,
                     # on the next app start. Closing the emulator is the moment
                     # the save is both final and worth confirming to the user.
-                    eden_running = emulator_saves.eden_is_running()
-                    cemu_running = emulator_saves.cemu_is_running()
-                    now_running = bool(retroarch_running or eden_running or cemu_running)
+                    standalone_running = self._standalone_emulators_running()
+                    now_running = bool(retroarch_running or any(standalone_running.values()))
                     if now_running != self.game_running:
                         self.game_running = now_running
                         _events.publish('game')
@@ -13677,21 +13711,8 @@ class AutoSyncManager:
                         self.play_sessions.observe(self.game_running)
                     except Exception as e:
                         logging.warning(f"play session tracking: {e}")
-                    # Cemu, likewise: a Wii U save is final once Cemu exits.
-                    if cemu_running != cemu_was_running:
-                        if cemu_running:
-                            self.log("🎮 Cemu launched")
-                        else:
-                            self.log("🎮 Cemu closed")
-                            self.trigger_session_save_sync("Cemu closed")
-                        cemu_was_running = cemu_running
-                    if eden_running != eden_was_running:
-                        if eden_running:
-                            self.log("🎮 Eden launched")
-                        else:
-                            self.log("🎮 Eden closed")
-                            self.trigger_session_save_sync("Eden closed")
-                        eden_was_running = eden_running
+                    standalone_was_running = self._note_standalone_transitions(
+                        standalone_was_running, standalone_running)
 
                     # 3. PRIORITY: Network state detection (content loaded/unloaded)
                     if network_responding != last_network_state:
@@ -13780,7 +13801,8 @@ class AutoSyncManager:
                 try:
                     running = (self.is_retroarch_running()
                                or emulator_saves.eden_is_running()
-                               or emulator_saves.cemu_is_running())
+                               or emulator_saves.cemu_is_running()
+                               or emulator_saves.lichii_is_running())
                     self.play_sessions.observe(running)
                 except Exception as e:
                     logging.warning(f"play watch: {e}")

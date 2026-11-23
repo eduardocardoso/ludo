@@ -32,7 +32,7 @@ import zipfile
 from pathlib import Path
 
 from . import title_ids
-from .eden_family import EDEN
+from .eden_family import EDEN, LICHII
 from .paths import machine_cache_dir
 
 log = logging.getLogger(__name__)
@@ -129,6 +129,21 @@ def eden_data_dirs(extra=None, variant=EDEN):
         if path.is_dir() and path not in found:
             found.append(path)
     return found
+
+
+def data_dir_setting(settings, variant=EDEN):
+    """The ``[Emulators] <variant.settings_key>`` data folder, or None.
+
+    Pass it to eden_data_dirs as ``extra``: a set folder is used alone, and
+    without one the variant's environment variable and then its default
+    folders apply. [Emulators] is optional, and a missing section raises
+    rather than falling back, so any failure reads as "not set".
+    """
+    try:
+        value = (settings.get('Emulators', variant.settings_key, '') or '').strip()
+    except Exception:
+        value = ''
+    return value or None
 
 
 def _is_flatpak_dir(directory):
@@ -920,12 +935,26 @@ def eden_pids(variant=EDEN, proc_root=None):
     ``variant`` picks the Eden-family emulator; ``proc_root`` stands in for
     /proc in tests.
     """
+    return _variant_pids(variant, proc_root)
+
+
+def _variant_pids(variant, proc_root=None):
     pids = []
     for name in variant.process_names:
         for pid in _pids_named(name, proc_root):
             if pid not in pids:
                 pids.append(pid)
     return pids
+
+
+def lichii_is_running(proc_root=None):
+    """True when a Lichii process appears to be running.
+
+    Scans on its own rather than through eden_is_running / eden_pids, which
+    tests stub with no-argument lambdas: the play watcher asks about Lichii
+    right next to Eden, and must not trip over an Eden-only stub.
+    """
+    return bool(_variant_pids(LICHII, proc_root))
 
 
 def cemu_is_running():

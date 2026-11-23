@@ -73,6 +73,11 @@ plays as that user the first time instead of getting a new one, so users made
 by hand keep their saves. A user another profile already plays as is not
 reused, and a profile that already has its user never switches to another.
 
+A save belongs to the emulator its game launches in. Ludo uploads Switch 2
+saves from Lichii, labelled `Lichii`, and Switch saves from Eden, labelled
+`Eden`. Lichii can also run Switch 1 games, but Switch 1 saves made in Lichii
+are not synced: they stay on that machine.
+
 Before starting Eden or Lichii as a profile's user, Ludo turns off the
 emulator's "select user on boot" option, so its user picker can't override
 that user. If the emulator is already running, Ludo leaves the option alone.

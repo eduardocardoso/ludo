@@ -274,14 +274,16 @@ def _newest_mtime(directory):
     return newest
 
 
-def _profile_eden_user():
+def _profile_eden_user(variant=EDEN):
     """The current profile's Eden user (see profiles.eden_user): None when
     profiles are not in use, else {'save_dir'} or {'error'}."""
     from . import profiles
-    return profiles.eden_user(create=True)
+    if variant is EDEN:
+        return profiles.eden_user(create=True)
+    return profiles.eden_user(create=True, variant=variant)
 
 
-def find_eden_saves(extra_data_dir=None):
+def find_eden_saves(extra_data_dir=None, variant=EDEN):
     """Every Eden save on disk, as dicts of {title_id, path, modified}.
 
     Empty save directories are skipped — Eden creates one for a game the moment
@@ -290,13 +292,19 @@ def find_eden_saves(extra_data_dir=None):
 
     With profiles, only the current profile's Eden user is looked at: the
     other users' saves belong to other people's RomM accounts.
+
+    ``variant`` picks the Eden-family emulator (eden_family); Eden by default.
     """
     best = {}
-    user = _profile_eden_user()
+    # Eden's calls stay exactly as they were: tests stub both helpers with
+    # narrow lambdas.
+    user = _profile_eden_user() if variant is EDEN else _profile_eden_user(variant)
     if user and 'error' in user:
-        log.info("Eden saves skipped for this profile: %s", user['error'])
+        log.info("%s saves skipped for this profile: %s", variant.name, user['error'])
         return []
-    for data_dir in eden_data_dirs(extra_data_dir):
+    dirs = (eden_data_dirs(extra_data_dir) if variant is EDEN
+            else eden_data_dirs(extra_data_dir, variant=variant))
+    for data_dir in dirs:
         root = data_dir.joinpath(*_EDEN_SAVE_ROOT)
         if not root.is_dir():
             log.debug("no Eden save tree at %s (not booted a game yet)", root)

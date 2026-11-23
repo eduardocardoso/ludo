@@ -16072,8 +16072,8 @@ class AutoSyncManager:
                 if owner:
                     # Another emulator's game (a Switch 1 save made in
                     # Lichii): see _rom_for_save_title.
-                    left_out.append(f"{title_id} (a {STANDALONE_EMULATORS[owner]['name']}"
-                                    " game)")
+                    left_out.append(f"{title_id} (owned by "
+                                    f"{STANDALONE_EMULATORS[owner]['name']})")
                 elif variant is EDEN:
                     # No local ROM carries this title ID. Without Sigil the ID
                     # is only legible in a ROM's filename, so an unmatched save

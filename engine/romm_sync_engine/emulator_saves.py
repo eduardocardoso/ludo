@@ -321,7 +321,8 @@ def find_eden_saves(extra_data_dir=None, variant=EDEN):
     for data_dir in dirs:
         root = data_dir.joinpath(*_EDEN_SAVE_ROOT)
         if not root.is_dir():
-            log.debug("no Eden save tree at %s (not booted a game yet)", root)
+            log.debug("no %s save tree at %s (not booted a game yet)",
+                      variant.name, root)
             continue
         if user:
             mine = root / ('0' * 16) / user['save_dir']

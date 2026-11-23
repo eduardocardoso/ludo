@@ -341,7 +341,7 @@ def eden_user(create=False, data_dir=None, variant=EDEN):
         name = entry.get('name') or entry.get('username') or 'Player'
         try:
             for d in missing:
-                uuid = eden_users.add(d, name, uuid)
+                uuid = eden_users.add(d, name, uuid, **kw)
         except eden_users.EdenUsersError as e:
             return {'error': str(e)}
         entry[variant.profile_key] = uuid

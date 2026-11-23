@@ -132,9 +132,15 @@ export const POPULATED_FIXTURES = {
     success: true, installed: true, kind: "retrodeck",
     executable: "flatpak run net.retrodeck.retrodeck", core_count: 243,
     standalone: [
-      { key: "eden", name: "Eden", installed: true, executable: "/home/t/AppImages/eden.AppImage", platforms: ["switch"] },
-      { key: "cemu", name: "Cemu", installed: true, executable: "flatpak:info.cemu.Cemu", platforms: ["wii u"] },
+      { key: "eden", name: "Eden", installed: true, executable: "/home/t/AppImages/eden.AppImage" },
+      { key: "lichii", name: "Lichii", installed: false, executable: "" },
+      { key: "cemu", name: "Cemu", installed: true, executable: "flatpak:info.cemu.Cemu" },
     ],
+    standalone_routes: {
+      "switch": "eden", "nintendo switch": "eden",
+      "switch-2": "lichii", "nintendo switch 2": "lichii",
+      "wiiu": "cemu", "nintendo wii u": "cemu",
+    },
     stale_paths: [], save_dirs: {}, bios_dir: "/home/t/bios",
     configured_paths: {}, default_paths: {}, expected_paths: {},
   },

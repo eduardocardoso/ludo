@@ -64,6 +64,7 @@ export function FoldersSection() {
           core_count: r.core_count ?? status.core_count,
           stale_paths: r.stale_paths || [], save_dirs: r.save_dirs || {},
           standalone: r.standalone || status.standalone || [],
+          standalone_routes: r.standalone_routes || status.standalone_routes || {},
           bios_dir: r.bios_dir || '', configured_paths: r.configured_paths || {},
           default_paths: r.default_paths || status.default_paths || {},
           expected_paths: r.expected_paths || status.expected_paths || {},

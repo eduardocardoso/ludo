@@ -31,19 +31,20 @@ import time
 import zipfile
 from pathlib import Path
 
-from . import title_ids
+from . import eden_storage, title_ids
 from .eden_family import EDEN, LICHII
 from .paths import machine_cache_dir
 
 log = logging.getLogger(__name__)
 
-# Eden's save tree, relative to its data directory. Only the leaf is uncertain:
-# savedata_factory resolves account saves under either
+# Eden's save tree is <save root>/user/save, where the save root is the
+# save_directory the emulator's own config names, else <data dir>/nand
+# (eden_storage.save_tree, which documents the precedence). Only the leaf is
+# uncertain: savedata_factory resolves account saves under either
 # "save/<device id>/<user id>/<title id>" or "save/account/<user id>", and a
 # device save drops the user level entirely. Rather than encode a depth that is
 # right for one of those and silently wrong for the others, the walk below
 # searches for the title-ID-shaped component at any depth within _MAX_DEPTH.
-_EDEN_SAVE_ROOT = ('nand', 'user', 'save')
 
 # Installed system firmware. Flat: a live install holds 229 .nca files here and
 # no subdirectories at all.
@@ -319,7 +320,7 @@ def find_eden_saves(extra_data_dir=None, variant=EDEN):
     dirs = (eden_data_dirs(extra_data_dir) if variant is EDEN
             else eden_data_dirs(extra_data_dir, variant=variant))
     for data_dir in dirs:
-        root = data_dir.joinpath(*_EDEN_SAVE_ROOT)
+        root = eden_storage.save_tree(data_dir, variant)
         if not root.is_dir():
             log.debug("no %s save tree at %s (not booted a game yet)",
                       variant.name, root)
@@ -1086,10 +1087,11 @@ def eden_restore_dir(title_id, extra_data_dir=None, variant=EDEN):
             return None
         if not dirs:
             return None
-        return dirs[0].joinpath(*_EDEN_SAVE_ROOT, '0' * 16, user['save_dir'], title_id.upper())
+        return (eden_storage.save_tree(dirs[0], variant)
+                / ('0' * 16) / user['save_dir'] / title_id.upper())
     users, first = set(), None
     for data_dir in dirs:
-        root = data_dir.joinpath(*_EDEN_SAVE_ROOT, '0' * 16)
+        root = eden_storage.save_tree(data_dir, variant) / ('0' * 16)
         try:
             found = [d for d in root.iterdir() if d.is_dir() and d.name.strip('0')]
         except OSError:

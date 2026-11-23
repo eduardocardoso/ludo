@@ -833,6 +833,7 @@ class GameDataCache:
             'wii': 'Nintendo Wii',
             'wiiu': 'Nintendo Wii U',
             'switch': 'Nintendo Switch',
+            'switch-2': 'Nintendo Switch 2',
             'gb': 'Game Boy',
             'gbc': 'Game Boy Color',
             'gba': 'Game Boy Advance',
@@ -1262,9 +1263,12 @@ def _is_own_appimage(name):
 # fixed argv template. Nothing else about it is ours to manage — no cores, no
 # save dirs, no config.
 #
-# `platforms` are matched case-insensitively against the RomM platform name AND
-# slug, as a substring of the platform name, so "Nintendo Switch", "switch" and
-# "Nintendo - Switch" all land on the same entry.
+# Routing is exact, never a substring: `slugs` are RomM platform slugs and
+# `names` are platform names, both lowercase and compared case-insensitively.
+# A substring match sent "Nintendo Switch 2" / `switch-2` to Eden, which can't
+# run them. A name may also be a bare slug, since a game with no RomM platform
+# name falls back to its slug. standalone_routes() folds both into the one
+# table the backend routes with and the UI reads, so the two never disagree.
 # `args` is the argv after the executable; '{rom}' is replaced with the ROM path.
 # ---------------------------------------------------------------------------
 # Names the libretro PS2 cores report, which RetroArch uses for its per-core
@@ -1278,18 +1282,29 @@ BUILDBOT_RETRY_SECONDS = 300
 STANDALONE_EMULATORS = {
     'eden': {
         'name': 'Eden',
-        'platforms': ('nintendo switch', 'switch'),
+        'slugs': ('switch', 'nintendo-switch'),
+        'names': ('nintendo switch', 'nintendo - switch', 'switch'),
         'flatpak_id': 'dev.eden_emu.eden',
         # Gear Lever installs land in ~/AppImages as a lowercase 'eden.appimage',
         # so the match is on the stem rather than the official casing.
         'binaries': ('eden',),
         'args': ('-f', '-g', '{rom}'),
     },
+    'lichii': {
+        # The Eden fork that runs Switch 2 games. AppImage only, released as
+        # lichii-linux-x86_64[-pgo].AppImage; Gear Lever's copy is
+        # 'lichii.appimage'. Both stems start with 'lichii'.
+        'name': 'Lichii',
+        'slugs': ('switch-2',),
+        'names': ('nintendo switch 2', 'nintendo - switch 2', 'switch 2', 'switch-2'),
+        'binaries': ('lichii',),
+        'args': ('-f', '-g', '{rom}'),
+    },
     'cemu': {
         'name': 'Cemu',
-        # "wii u" before anything shorter: the plain Wii is a Dolphin platform
-        # and must never land here. A RomM slug is 'wiiu'; names vary.
-        'platforms': ('wii u', 'wiiu', 'wii-u'),
+        # The plain Wii is a Dolphin platform and must never land here.
+        'slugs': ('wiiu', 'wii-u', 'wii_u'),
+        'names': ('nintendo wii u', 'nintendo - wii u', 'wii u', 'wiiu', 'wii-u'),
         # Upstream publishes both: Flathub's info.cemu.Cemu and
         # Cemu-<ver>-x86_64.AppImage. The AppImage stem starts with 'cemu'.
         'flatpak_id': 'info.cemu.Cemu',
@@ -1390,15 +1405,22 @@ def _standalone_appimage_dirs():
 # and they share an app id -- so they share saves, NAND, firmware, keys and
 # qt-config.ini, and switching between them loses nothing.
 _STANDALONE_DEV_MARKERS = ('nightly', 'canary', 'dev', 'early-access', 'ea')
+# Stems that mark another flavour of the same stable release, named so the
+# build picker doesn't show two identical entries. Lichii ships a regular and
+# a profile-guided-optimisation build side by side. Not a dev build.
+_STANDALONE_VARIANT_MARKERS = {'pgo': 'PGO'}
 
 
 def _standalone_build_label(spec, stem):
-    """Human name for one discovered build: "Eden" or "Eden nightly"."""
+    """Human name for one discovered build: "Eden", "Eden nightly", "Lichii PGO"."""
     name = spec.get('name') or stem
     parts = re.split(r'[-_. ]+', stem.lower())
     for marker in _STANDALONE_DEV_MARKERS:
         if marker in parts:
             return f"{name} {marker}"
+    for marker, label in _STANDALONE_VARIANT_MARKERS.items():
+        if marker in parts:
+            return f"{name} {label}"
     return name
 
 
@@ -1700,14 +1722,28 @@ def standalone_emulator_for_platform(platform_name, platform_slug=None):
     and the two are worth keeping apart: "Switch is not a core platform" stays
     true whether or not Eden is on disk.
     """
-    haystack = ' '.join(str(x or '').lower() for x in (platform_name, platform_slug))
-    if not haystack.strip():
-        return None
-    for key, spec in STANDALONE_EMULATORS.items():
-        for token in spec['platforms']:
-            if token in haystack:
-                return key, spec
+    routes = standalone_routes()
+    # Slug first: it is RomM's stable id, while names vary between servers.
+    # Some callers hold only a slug and pass it as the name, which works
+    # because the table holds slugs and names alike.
+    for value in (platform_slug, platform_name):
+        key = routes.get(str(value or '').strip().lower())
+        if key:
+            return key, STANDALONE_EMULATORS[key]
     return None
+
+
+def standalone_routes():
+    """{lowercase platform slug or name: standalone emulator key}.
+
+    The one routing table: standalone_emulator_for_platform looks platforms up
+    in it, and the UI gets it through emulator_status() to do the same.
+    """
+    routes = {}
+    for key, spec in STANDALONE_EMULATORS.items():
+        for token in (*spec['slugs'], *spec['names']):
+            routes[token.lower()] = key
+    return routes
 
 
 def detect_retrodeck():
@@ -8339,6 +8375,9 @@ class RetroArchInterface:
             # above: their platforms are playable with no RetroArch at all, so
             # the UI must not dim Play for them on a RetroArch-less machine.
             'standalone': self.standalone_emulators_status(),
+            # Which platform each of them runs, resolved here so the UI never
+            # matches platform names on its own and disagrees with the launch.
+            'standalone_routes': standalone_routes(),
             # The RAW configured values, so the UI can tell "the user set this"
             # from "we detected it". get_config() merges in fallbacks, which is
             # right for the wizard but hides the difference here.
@@ -9466,9 +9505,8 @@ class RetroArchInterface:
     def standalone_emulators_status(self):
         """Every standalone emulator Ludo knows about, and whether it's here.
 
-        [{key, name, installed, executable, platforms}] — the UI uses the
-        platform tokens to decide whether a given game is playable, so they
-        travel with the entry rather than being duplicated in the frontend.
+        [{key, name, installed, executable}]. Which platform goes to which
+        emulator travels separately, as emulator_status()['standalone_routes'].
         """
         out = []
         for key, spec in STANDALONE_EMULATORS.items():
@@ -9477,8 +9515,7 @@ class RetroArchInterface:
             except Exception:
                 exe = ''
             out.append({'key': key, 'name': spec['name'],
-                        'installed': bool(exe), 'executable': exe,
-                        'platforms': list(spec['platforms'])})
+                        'installed': bool(exe), 'executable': exe})
         return out
 
     @staticmethod

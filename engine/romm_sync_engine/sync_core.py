@@ -16033,14 +16033,21 @@ class AutoSyncManager:
             # Its own folder: the same title can have a save in both trees,
             # and the two packs must not overwrite each other before upload.
             pack_dir = pack_dir / variant.key
-        # Restores into Lichii keep no awaiting list yet, so nothing to skip.
-        awaiting = self._eden_awaiting_restore() if variant is EDEN else {}
+        # Each emulator's own list: a restore owed to Eden says nothing about
+        # the same title's save in Lichii, nor the reverse.
+        if variant is EDEN:
+            awaiting = self._eden_awaiting_restore()
+        else:
+            awaiting = self._eden_awaiting_restore(variant)
         left_out = []
         for save in saves:
             title_id = save['title_id']
-            if title_id in awaiting and self._eden_restore_still_owed(
-                    title_id, awaiting[title_id]):
-                continue
+            if title_id in awaiting:
+                owed = (self._eden_restore_still_owed(title_id, awaiting[title_id])
+                        if variant is EDEN else self._eden_restore_still_owed(
+                            title_id, awaiting[title_id], variant=variant))
+                if owed:
+                    continue
             rom_id, owner = self._rom_for_save_title(title_id, variant)
             if not rom_id:
                 if owner:
@@ -17773,15 +17780,21 @@ class AutoSyncManager:
     # booted here. RomM cannot protect these: with no sync history it compares
     # timestamps, so the save written on first boot looks newer and would upload
     # over the player's progress. Kept on disk so a restart does not forget.
-    def _eden_awaiting_restore(self):
+    # One file per Eden-family emulator ("eden_awaiting_restore.json",
+    # "lichii_awaiting_restore.json"): the same title can be owed to both.
+    @staticmethod
+    def _awaiting_restore_path(variant=EDEN):
+        return cache_dir() / f'{variant.key}_awaiting_restore.json'
+
+    def _eden_awaiting_restore(self, variant=EDEN):
         try:
-            data = json.loads((cache_dir() / 'eden_awaiting_restore.json').read_text())
+            data = json.loads(self._awaiting_restore_path(variant).read_text())
             return data if isinstance(data, dict) else {}
         except (OSError, ValueError):
             return {}
 
-    def _set_eden_awaiting_restore(self, title_id, op=None):
-        awaiting = self._eden_awaiting_restore()
+    def _set_eden_awaiting_restore(self, title_id, op=None, variant=EDEN):
+        awaiting = self._eden_awaiting_restore(variant)
         title_id = title_id.upper()
         if op is None:
             if title_id not in awaiting:
@@ -17789,13 +17802,13 @@ class AutoSyncManager:
             del awaiting[title_id]
         else:
             awaiting[title_id] = {'rom_id': op.get('rom_id'), 'save_id': op.get('save_id')}
-        path = cache_dir() / 'eden_awaiting_restore.json'
+        path = self._awaiting_restore_path(variant)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix('.tmp')
         tmp.write_text(json.dumps(awaiting))
         os.replace(tmp, path)
 
-    def _eden_restore_still_owed(self, title_id, entry):
+    def _eden_restore_still_owed(self, title_id, entry, variant=EDEN):
         """False once the server no longer has a save to restore for this title.
 
         Otherwise deleting that save in RomM would stop this game syncing for
@@ -17805,11 +17818,14 @@ class AutoSyncManager:
             url = urljoin(self.romm_client.base_url, f"/api/roms/{entry.get('rom_id')}")
             r = self.romm_client.session.get(url, timeout=15)
             if r.status_code == 200 and not (r.json().get('user_saves') or []):
-                self._set_eden_awaiting_restore(title_id)
+                if variant is EDEN:
+                    self._set_eden_awaiting_restore(title_id)
+                else:
+                    self._set_eden_awaiting_restore(title_id, variant=variant)
                 return False
         except Exception as e:
             logging.debug(f"could not check the awaited save for {title_id}: {e}")
-        logging.info(f"Eden save {title_id}: not uploading a first-boot save "
+        logging.info(f"{variant.name} save {title_id}: not uploading a first-boot save "
                      f"over the server's; restoring the server's first")
         return True
 
@@ -17862,24 +17878,65 @@ class AutoSyncManager:
             # Still nothing: the pack itself says, once downloaded -- both
             # Ludo and Argosy nest a save under its title-ID folder.
 
+        return self._restore_eden_family_save(op, device_id, session_id, file_name,
+                                              title_id, self._restore_variant(op))
+
+    def _restore_variant(self, op):
+        """The Eden-family emulator a Switch-family server save restores into.
+
+        The emulator its ROM routes to (switch -> Eden, switch-2 -> Lichii),
+        never the save's Emulator label: a foreign or buggy upload can carry
+        any label, so an 'Eden' save on a switch-2 ROM still goes to Lichii,
+        and a switch ROM's save never does. See _rom_for_save_title, which
+        decides the same owner on the upload side. A ROM the library does not
+        list restores into Eden, as before Lichii existed.
+        """
+        return variant_for_key(self._save_owner(op.get('rom_id'))) or EDEN
+
+    def _restore_eden_family_save(self, op, device_id, session_id, file_name,
+                                  title_id, variant=EDEN):
+        """_restore_standalone_save for an Eden or Lichii pack.
+
+        Eden's calls below keep exactly their old arguments: tests stub the
+        emulator_saves helpers with narrow lambdas.
+        """
+        eden = variant is EDEN
+
+        def set_awaiting(title, owed=None):
+            if eden:
+                self._set_eden_awaiting_restore(title, owed)
+            else:
+                self._set_eden_awaiting_restore(title, owed, variant=variant)
+
         # Check before spending the transfer. unpack_save checks again and is
         # the authoritative one -- Eden can start while the download runs --
         # but without this a restore attempted with Eden open pays for the
         # whole save every sync just to be refused at the end.
-        if emulator_saves.eden_is_running():
-            self.log(f"ℹ️ Save-sync: Eden is running; {title_id or file_name} will "
-                     f"restore once it is closed.")
+        if (emulator_saves.eden_is_running() if eden
+                else emulator_saves.lichii_is_running() if variant is LICHII
+                else emulator_saves.eden_is_running(variant)):
+            self.log(f"ℹ️ Save-sync: {variant.name} is running; {title_id or file_name} "
+                     f"will restore once it is closed.")
             return False
 
-        try:
-            override = (self.settings.get('Emulators', 'eden_data_dir', '') or '').strip()
-        except Exception:
-            override = ''
-        if title_id and emulator_saves.eden_restore_dir(title_id, override or None) is None:
-            self._set_eden_awaiting_restore(title_id, op)
-            self.log(f"ℹ️ Save-sync: {title_id} hasn't booted here yet; its server "
-                     f"save will restore after the first boot.")
-            return False
+        if eden:
+            try:
+                override = (self.settings.get('Emulators', 'eden_data_dir', '') or '').strip()
+            except Exception:
+                override = ''
+        else:
+            override = emulator_saves.data_dir_setting(self.settings, variant) or ''
+        if title_id:
+            if eden:
+                target = emulator_saves.eden_restore_dir(title_id, override or None)
+            else:
+                target = emulator_saves.eden_restore_dir(
+                    title_id, override or None, variant=variant)
+            if target is None:
+                set_awaiting(title_id, op)
+                self.log(f"ℹ️ Save-sync: {title_id} hasn't booted here yet; its server "
+                         f"save will restore after the first boot.")
+                return False
 
         # No device_id: downloading with one makes RomM record this device as
         # synced to the save, which is only true after the unpack below works.
@@ -17897,7 +17954,7 @@ class AutoSyncManager:
         import zipfile
         if not zipfile.is_zipfile(staged):
             self.log(f"⚠️ Save-sync: server save {file_name!r} for {title_id} is a "
-                     f"bare .srm, not an Eden save pack — likely a stray upload from "
+                     f"bare .srm, not an {variant.name} save pack — likely a stray upload from "
                      f"a mislabelled sync. Delete it in RomM so the real save can "
                      f"become the slot's latest.")
             staged.unlink(missing_ok=True)
@@ -17912,9 +17969,17 @@ class AutoSyncManager:
 
         pack_hash = RomMClient.compute_content_hash(staged)
         try:
-            result = emulator_saves.unpack_save(
-                staged, title_id, extra_data_dir=override or None,
-                backup_dir=cache_dir() / 'save_backups')
+            if eden:
+                result = emulator_saves.unpack_save(
+                    staged, title_id, extra_data_dir=override or None,
+                    backup_dir=cache_dir() / 'save_backups')
+            else:
+                # Backups in their own folder, as packs are: the same title
+                # can be restored into both emulators.
+                result = emulator_saves.unpack_save(
+                    staged, title_id, extra_data_dir=override or None,
+                    backup_dir=cache_dir() / 'save_backups' / variant.key,
+                    variant=variant)
         except RuntimeError as e:
             # Eden is open. Not a failure -- retrying after it closes is the
             # right outcome, and overwriting a save the emulator has in memory
@@ -17923,7 +17988,7 @@ class AutoSyncManager:
                      f"and will restore next sync.")
             return False
         except FileNotFoundError as e:
-            self._set_eden_awaiting_restore(title_id, op)
+            set_awaiting(title_id, op)
             self.log(f"ℹ️ Save-sync: {e}")
             return False
         except Exception as e:
@@ -17932,7 +17997,7 @@ class AutoSyncManager:
         finally:
             staged.unlink(missing_ok=True)
 
-        self._set_eden_awaiting_restore(title_id)
+        set_awaiting(title_id)
         if device_id:
             self.romm_client.confirm_save_downloaded(
                 op.get('save_id'), 'saves', device_id, content_hash=pack_hash)

@@ -198,6 +198,82 @@ def register_external_content_dir(directory, extra_config_dir=None):
     return 'ok'
 
 
+_SELECT_USER = 'select_user_on_boot'
+
+
+def disable_select_user_on_boot(extra_config_dir=None, variant=EDEN):
+    """Turn off ``[UI] select_user_on_boot`` so ``-u <n>`` picks the user.
+
+    With the setting on, Eden shows its user picker at boot even when it was
+    launched with ``-u``, so whoever is holding the pad can play as another
+    Profile's Emulator user and write saves into that Profile. Ludo launches
+    per-profile on purpose, so before such a launch it turns the picker off.
+
+    Returns 'ok' (turned off), 'already' (off or never set; the file is not
+    touched), 'no-config', 'running' (left alone: the emulator writes its
+    in-memory config back on exit, see register_external_content_dir) or
+    'failed'. ``variant`` picks the Eden-family emulator; Eden by default.
+    """
+    if variant is EDEN:
+        path = config_path(extra_config_dir)
+    else:
+        path = config_path(extra_config_dir, variant)
+    if path is None:
+        return 'no-config'
+    try:
+        text = path.read_text(encoding='utf-8', errors='replace')
+    except OSError as e:
+        log.warning("could not read %s config %s: %s", variant.name, path, e)
+        return 'failed'
+    lines = text.splitlines()
+    bounds = _section_bounds(lines)
+    if bounds is None:
+        return 'already'
+    start, end = bounds
+    value_at = default_at = None
+    for i in range(start, end):
+        key = lines[i].partition('=')[0].strip()
+        if key == _SELECT_USER:
+            value_at = i
+        elif key == _SELECT_USER + '\\default':
+            default_at = i
+    if value_at is None or lines[value_at].partition('=')[2].strip().strip('"') != 'true':
+        return 'already'
+
+    # Exactly today's call for Eden: tests stub eden_is_running with a
+    # no-argument lambda.
+    running = eden_is_running() if variant is EDEN else eden_is_running(variant)
+    if running:
+        log.warning("%s is running, so select_user_on_boot stays on in %s; its "
+                    "user picker can override this profile's user",
+                    variant.name, path)
+        return 'running'
+
+    # Mirror what the emulator itself writes for the default value.
+    lines[value_at] = f"{_SELECT_USER}=false"
+    if default_at is not None:
+        lines[default_at] = f"{_SELECT_USER}\\default=true"
+
+    backup = path.with_suffix('.ini.ludo-bak')
+    try:
+        shutil.copy2(path, backup)
+    except OSError as e:
+        log.debug("could not back up %s: %s", path, e)
+    body = '\n'.join(lines)
+    if text.endswith('\n'):
+        body += '\n'
+    try:
+        staging = path.with_name(path.name + '.part')
+        staging.write_text(body, encoding='utf-8')
+        staging.replace(path)
+    except OSError as e:
+        log.warning("could not write %s config %s: %s", variant.name, path, e)
+        return 'failed'
+    log.info("turned off select_user_on_boot in %s so -u picks the profile's user",
+             path)
+    return 'ok'
+
+
 # ---------------------------------------------------------------------------
 # Player 1's controller
 #

@@ -474,7 +474,7 @@ def title_id_from_save(path):
     return None
 
 
-def index_roms(directories, extensions=None, prod_keys=None):
+def index_roms(directories, extensions=None, prod_keys=None, every=None):
     """Build {title_id: rom_path} for the ROMs under ``directories``.
 
     Sigil reads at most a few sectors per file -- a disc header, an ISO 9660
@@ -483,6 +483,10 @@ def index_roms(directories, extensions=None, prod_keys=None):
     are skipped.
 
     ``prod_keys`` is forwarded to Sigil for Switch decryption.
+
+    ``every``, when a dict, also receives {title_id: [rom_path, ...]}: every
+    ROM that identified as the title, not only the one the index keeps. A
+    Switch 2 Edition and its Switch 1 game can carry one ID on two ROMs.
     """
     extensions = extensions or _ROM_EXTENSIONS
     index = {}
@@ -501,6 +505,8 @@ def index_roms(directories, extensions=None, prod_keys=None):
                 continue
             if not title_id:
                 continue
+            if every is not None:
+                every.setdefault(title_id, []).append(path)
             # A game, its update, and its DLC all normalise to one base ID, so
             # several ROMs can claim the same entry. The base game wins: it is
             # the title the save belongs to, and attributing a save to a DLC

@@ -18924,18 +18924,34 @@ class AutoSyncManager:
                     # from the filename — the difference between matching a
                     # plainly-named dump and not.
                     prod_keys = emulator_saves.find_prod_keys()
+                    every = {}
                     for tid, path in title_ids.index_roms(
-                            [rom_dir], prod_keys=prod_keys).items():
+                            [rom_dir], prod_keys=prod_keys, every=every).items():
                         # Reuse the name-based tiers to turn the ROM file into a
                         # rom_id. The suffix is irrelevant to them; only the stem
                         # is compared.
                         key = self._title_id_key(tid)
-                        if not key or key in self._title_id_index:
+                        # Candidates matter only to the Eden family's save
+                        # owner (_rom_for_save_title); every other title keeps
+                        # the one lookup it had.
+                        switch = bool(title_ids.base_switch_title_id(tid))
+                        if not key or (not switch and key in self._title_id_index):
                             continue
                         rom_id = self.find_rom_id_for_save_file(
                             path.with_suffix('.srm'))
-                        if rom_id:
+                        self._note_title_rom(key, rom_id)
+                        if rom_id and key not in self._title_id_index:
                             self._title_id_index[key] = rom_id
+                        # Every local ROM carrying the title is a candidate,
+                        # even when a tier above or a better-ranked file here
+                        # already claimed it: a plainly named Switch 2 Edition
+                        # is identified only by its container, and without
+                        # this its Lichii save matches no ROM routed to Lichii.
+                        for other in (every.get(tid, ()) if switch else ()):
+                            if other != path:
+                                self._note_title_rom(
+                                    key, self.find_rom_id_for_save_file(
+                                        other.with_suffix('.srm')))
                     logging.debug(
                         f"title-ID index: {len(self._title_id_index)} ROMs identified")
             except Exception as e:

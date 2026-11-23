@@ -32,6 +32,7 @@ import zipfile
 from pathlib import Path
 
 from . import title_ids
+from .eden_family import EDEN
 from .paths import machine_cache_dir
 
 log = logging.getLogger(__name__)
@@ -89,15 +90,14 @@ _MAX_DEPTH = 5
 # has nand/system/save but no user tree at all. That is an ordinary state, not
 # a broken install, and it is why every lookup here returns empty rather than
 # raising.
-EDEN_DATA_DIRS = (
-    # Flatpak (dev.eden_emu.eden) redirects XDG_DATA_HOME into its sandbox.
-    '~/.var/app/dev.eden_emu.eden/data/eden',
-    # Native, AppImage, and anything else honouring XDG_DATA_HOME.
-    '~/.local/share/eden',
-)
+#
+# Flatpak first (dev.eden_emu.eden redirects XDG_DATA_HOME into its sandbox),
+# then native, AppImage and anything else honouring XDG_DATA_HOME. The values
+# live on the Eden-family descriptor; the name stays for existing importers.
+EDEN_DATA_DIRS = EDEN.data_dirs
 
 
-def eden_data_dirs(extra=None):
+def eden_data_dirs(extra=None, variant=EDEN):
     """Existing Eden data directories, most specific first.
 
     Both install kinds are checked because Ludo launches both: a flatpak Eden
@@ -110,16 +110,18 @@ def eden_data_dirs(extra=None):
     not-yet-created install into a silent write against the real one. Discovery
     would only misreport; installing firmware would modify an emulator the
     caller never named.
+
+    ``variant`` picks the Eden-family emulator (eden_family); Eden by default.
     """
     if extra:
         path = Path(extra).expanduser()
         return [path] if path.is_dir() else []
 
     candidates = []
-    env = os.environ.get('EDEN_DATA_DIR')
+    env = os.environ.get(variant.data_dir_env)
     if env:
         candidates.append(env)
-    candidates.extend(EDEN_DATA_DIRS)
+    candidates.extend(variant.data_dirs)
 
     found = []
     for candidate in candidates:
@@ -129,21 +131,34 @@ def eden_data_dirs(extra=None):
     return found
 
 
-def eden_data_dir_for(executable):
+def _is_flatpak_dir(directory):
+    return '/.var/app/' in directory
+
+
+def eden_data_dir_for(executable, variant=EDEN):
     """The data directory the Eden at ``executable`` uses, existing or not."""
     if str(executable or '').startswith('flatpak:'):
-        return Path(EDEN_DATA_DIRS[0]).expanduser()
-    return Path(os.environ.get('EDEN_DATA_DIR') or EDEN_DATA_DIRS[1]).expanduser()
+        flatpak = [d for d in variant.data_dirs if _is_flatpak_dir(d)]
+        if flatpak:
+            return Path(flatpak[0]).expanduser()
+    # The native directory: the last one, since data_dirs runs most specific
+    # (flatpak) first and a variant need not have a flatpak one at all.
+    return Path(os.environ.get(variant.data_dir_env)
+                or variant.data_dirs[-1]).expanduser()
 
 
-def eden_install_data_dir():
+def eden_install_data_dir(variant=EDEN):
     """Data directory of the Eden Ludo would launch, or None when no Eden is
     installed. Unlike eden_data_dirs, it need not exist yet: Eden makes it on
     its first start."""
     from . import sync_core
     exe = sync_core.find_standalone_executable(
-        'eden', sync_core.STANDALONE_EMULATORS['eden'])
-    return eden_data_dir_for(exe) if exe else None
+        variant.key, sync_core.STANDALONE_EMULATORS[variant.key])
+    if not exe:
+        return None
+    if variant is EDEN:
+        return eden_data_dir_for(exe)
+    return eden_data_dir_for(exe, variant)
 
 
 def find_prod_keys(extra_data_dir=None):
@@ -897,13 +912,20 @@ def install_keys_file(path, extra_data_dir=None, dry_run=False,
         return int(_write(known, source))
 
 
-def eden_pids():
+def eden_pids(variant=EDEN, proc_root=None):
     """PIDs of the Eden processes that are really running (zombies excluded).
 
     Cheap /proc scan rather than a dependency -- a false negative only costs
     the caller its guard, and a false positive only defers what it guards.
+    ``variant`` picks the Eden-family emulator; ``proc_root`` stands in for
+    /proc in tests.
     """
-    return _pids_named('eden')
+    pids = []
+    for name in variant.process_names:
+        for pid in _pids_named(name, proc_root):
+            if pid not in pids:
+                pids.append(pid)
+    return pids
 
 
 def cemu_is_running():
@@ -912,11 +934,12 @@ def cemu_is_running():
     return bool(_pids_named('cemu'))
 
 
-def _pids_named(prefix):
-    """PIDs whose process name starts with `prefix`, zombies excluded."""
+def _pids_named(prefix, proc_root=None):
+    """PIDs whose process name starts with `prefix`, zombies excluded.
+    ``proc_root`` stands in for /proc in tests."""
     pids = []
     try:
-        for entry in Path('/proc').iterdir():
+        for entry in Path(proc_root or '/proc').iterdir():
             if not entry.name.isdigit():
                 continue
             try:
@@ -950,14 +973,17 @@ def _pids_named(prefix):
     return pids
 
 
-def eden_is_running():
+def eden_is_running(variant=EDEN, proc_root=None):
     """True when an Eden process appears to be running.
 
     Restoring into a live emulator's save directory races whatever Eden holds
     in memory: it can flush its own copy over the restored one at exit, or read
     a half-swapped directory.
     """
-    return bool(eden_pids())
+    if variant is EDEN and proc_root is None:
+        # Exactly today's call: tests stub eden_pids with a no-argument lambda.
+        return bool(eden_pids())
+    return bool(eden_pids(variant, proc_root))
 
 
 def close_eden(timeout=10.0):

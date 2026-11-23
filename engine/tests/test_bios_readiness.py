@@ -208,6 +208,17 @@ def main():
     scan(tracker4)
     check('ready is retracted', tracker4.platforms_ready, set())
 
+    print("\nSwitch-family firmware never lands in RetroArch's system folder")
+    # RomM serves Switch and Switch 2 firmware from the same endpoint as every
+    # BIOS. Neither belongs in RetroArch's folder, so a server that holds some
+    # must still produce no download, and the platform is ready regardless.
+    for slug in ('switch', 'switch-2'):
+        fake_sw = FakeBios(server=['Firmware.22.5.0.zip', 'prod.keys'])
+        tracker_sw = make_tracker(fake_sw)
+        tracker_sw.download_bios_for_platform(slug, 'Nintendo Switch')
+        check(f'{slug}: no generic BIOS download', fake_sw.downloads, [])
+        check(f'{slug}: marked ready', tracker_sw.platforms_ready, {slug})
+
     print("\nplatform resolution does not collide PS1 with PS2")
     # The server list in the order RomM returned it in the real failure:
     # 'PlayStation' first, and 'playstation' is a substring of 'playstation 2'.

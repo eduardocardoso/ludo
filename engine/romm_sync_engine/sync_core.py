@@ -1279,6 +1279,10 @@ PS2_CORE_NAMES = ('LRPS2', 'ParaLLEl PS2', 'PCEE2')
 # How long a failed core list fetch stands before anything asks again.
 BUILDBOT_RETRY_SECONDS = 300
 
+# The Switch family: Nintendo Switch (run by Eden) and Switch 2 (run by
+# Lichii). Their firmware and keys are not RetroArch BIOS.
+SWITCH_FAMILY = ('switch', 'switch-2')
+
 STANDALONE_EMULATORS = {
     'eden': {
         'name': 'Eden',
@@ -20794,17 +20798,18 @@ class BiosTrackingManager:
             platform_name: Human-readable platform name (e.g., 'Sony - PlayStation')
         """
         try:
-            # Switch is not a BIOS platform. RomM holds its firmware as
+            # The Switch family is not BIOS. RomM holds Switch firmware as
             # ~325 MB archives (plus prod.keys) under the same /firmware
             # endpoint every other platform's BIOS comes from, so the generic
             # path treated them as "required files missing" and downloaded
             # EVERY set the server had -- 22.5.0 and 17.0.1 both, ~650 MB --
             # into RetroArch's system directory, where Eden never looks. The
             # firmware that matters is installed by sync_switch_firmware, into
-            # Eden's NAND, one chosen version at a time.
-            if str(platform_slug).strip().lower() == 'switch':
-                logging.debug("skipping generic BIOS download for Switch; "
-                              "firmware is installed by sync_switch_firmware")
+            # Eden's NAND, one chosen version at a time. Switch 2 firmware is
+            # skipped the same way; nothing installs it for Lichii yet.
+            if str(platform_slug).strip().lower() in SWITCH_FAMILY:
+                logging.debug("skipping generic BIOS download for %s; it is "
+                              "not RetroArch BIOS", platform_slug)
                 with self._lock:
                     self.platforms_ready.add(platform_slug)
                 return

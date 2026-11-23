@@ -18203,13 +18203,13 @@ class AutoSyncManager:
                         
                         if sibling_fs_name_no_ext and (sibling_fs_name_no_ext == save_basename or sibling_fs_name_no_ext == clean_basename):
                             # Return the variant's ROM ID, not the parent's —
-                            # except on Switch, where _sibling_files are add-on
-                            # content (update/DLC) grouped under the base game's
+                            # except on Switch and Switch 2, where _sibling_files
+                            # are add-on content (update/DLC) grouped under the base game's
                             # tile, not self-owned region ROMs. The save belongs
                             # to the main entry; attributing it to the sibling
                             # makes the server see "no save under this rom" and
                             # duplicate the upload on the sibling id.
-                            if str(game.get('platform_slug') or '').lower() == 'switch':
+                            if str(game.get('platform_slug') or '').lower() in SWITCH_FAMILY:
                                 return game['rom_id']
                             return sibling.get('id')
 
@@ -18267,10 +18267,10 @@ class AutoSyncManager:
                                 'game': game,
                                 'region': variant_region,
                                 'fs_name_no_ext': sibling_fs_name_no_ext,
-                                # Switch siblings are grouped add-ons, not
+                                # Switch / Switch 2 siblings are grouped add-ons, not
                                 # region ROMs — the main entry owns the save.
                                 'rom_id': (game['rom_id']
-                                           if str(game.get('platform_slug') or '').lower() == 'switch'
+                                           if str(game.get('platform_slug') or '').lower() in SWITCH_FAMILY
                                            else sibling.get('id'))
                             })
 
@@ -18550,12 +18550,12 @@ class AutoSyncManager:
         except Exception:
             return None
 
-    # Grouped tiles (an unpacked folder and a .wua of the same game, or two
-    # dumps of one Switch title) are one game with one save, and the save
+    # Grouped tiles (an unpacked folder and a .wua of the same game, or the
+    # base, update and DLC of one Switch or Switch 2 title) are one game with one save, and the save
     # folder is the title's either way. Argosy files a save under the ROM it
     # played and only reads saves on that ROM, so Ludo does the same when
     # writing and, when reading, takes the newest save on any ROM of the tile.
-    TILE_SAVE_PLATFORMS = ('wiiu', 'switch')
+    TILE_SAVE_PLATFORMS = ('wiiu',) + SWITCH_FAMILY
 
     @staticmethod
     def _tile_rom_ids(game):

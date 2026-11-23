@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 
 from . import paths
+from .eden_family import EDEN
 
 DEFAULT = paths.DEFAULT_PROFILE
 # How the running app chose its profile ({'id', 'steam', 'ask'}), set by a
@@ -218,31 +219,42 @@ def profiles_in_use():
     return len(load()['profiles']) > 1
 
 
-def _eden_dirs():
+def _variant_kw(variant):
+    """Keyword arguments that hand ``variant`` on to an Eden helper.
+
+    Empty for Eden, so every Eden call stays exactly as it was before the
+    Eden-family descriptor existed (tests stub these helpers with narrow
+    lambdas); only another Eden-family emulator is named explicitly.
+    """
+    return {} if variant is EDEN else {'variant': variant}
+
+
+def _eden_dirs(variant=EDEN):
     from . import eden_users, emulator_saves
-    return [d for d in emulator_saves.eden_data_dirs()
+    return [d for d in emulator_saves.eden_data_dirs(**_variant_kw(variant))
             if eden_users.users(d) is not None]
 
 
-def _first_eden_user_list(data_dir=None):
+def _first_eden_user_list(data_dir=None, variant=EDEN):
     """Create Eden's user list where Eden has never run, as Eden itself
     would on its first start (eden_users.create_default). [data dir] on
     success, else []. Needs an installed, closed Eden."""
     from . import eden_users, emulator_saves
-    if emulator_saves.eden_is_running():
+    kw = _variant_kw(variant)
+    if emulator_saves.eden_is_running(**kw):
         return []
-    target = Path(data_dir) if data_dir else emulator_saves.eden_install_data_dir()
+    target = Path(data_dir) if data_dir else emulator_saves.eden_install_data_dir(**kw)
     if target is None:
         return []
     try:
-        eden_users.create_default(target)
+        eden_users.create_default(target, **kw)
     except OSError as e:
-        logging.warning(f"Could not create Eden's user list in {target}: {e}")
+        logging.warning(f"Could not create {variant.name}'s user list in {target}: {e}")
         return []
     return [target] if eden_users.users(target) is not None else []
 
 
-def eden_user(create=False, data_dir=None):
+def eden_user(create=False, data_dir=None, variant=EDEN):
     """The Eden user the current profile plays as.
 
     None when profiles are not in use: callers behave exactly as before.
@@ -250,56 +262,61 @@ def eden_user(create=False, data_dir=None):
     none can be settled yet (Eden never started, all eight users taken, or
     Eden running when one would have to be added). With an error, Switch
     saves are left alone rather than guessed.
+
+    ``variant`` picks the Eden-family emulator (eden_family); Eden by default.
+    Each one's user is stored under its own Profile key.
     """
     if not profiles_in_use():
         return None
     from . import eden_config, eden_users, emulator_saves
-    dirs = _eden_dirs()
+    kw = _variant_kw(variant)
+    label = variant.name
+    dirs = _eden_dirs(**kw)
     if not dirs and create:
-        dirs = _first_eden_user_list(data_dir)
+        dirs = _first_eden_user_list(data_dir, **kw)
     if not dirs:
-        return {'error': 'Start Eden once so it creates its user list'}
+        return {'error': f'Start {label} once so it creates its user list'}
     current = paths.profile_id()
     data = load()
     entry = get(data, current)
     if entry is None:
         return {'error': 'Unknown profile'}
-    uuid = entry.get('eden_user')
+    uuid = entry.get(variant.profile_key)
     if not uuid and current == DEFAULT:
         # The first profile keeps whoever Eden had selected: their saves are
         # already under that user.
         listed = eden_users.users(dirs[0]) or []
         try:
-            index = int(eden_config._setting('[System]', 'current_user') or 0)
+            index = int(eden_config._setting('[System]', 'current_user', **kw) or 0)
         except ValueError:
             index = 0
         chosen = listed[index] if 0 <= index < len(listed) else (listed[0] if listed else None)
         if chosen is None:
-            return {'error': 'Eden has no users'}
+            return {'error': f'{label} has no users'}
         uuid = chosen['uuid']
-        entry['eden_user'] = uuid
+        entry[variant.profile_key] = uuid
         save(data)
     missing = [d for d in dirs if eden_users.find(d, uuid) is None] if uuid else dirs
     if missing:
         if not create:
-            return {'error': 'This profile has no Eden user yet'}
-        if emulator_saves.eden_is_running():
-            return {'error': 'Close Eden so Ludo can add this profile as an Eden user'}
+            return {'error': f'This profile has no {label} user yet'}
+        if emulator_saves.eden_is_running(**kw):
+            return {'error': f'Close {label} so Ludo can add this profile as an {label} user'}
         name = entry.get('name') or entry.get('username') or 'Player'
         try:
             for d in missing:
                 uuid = eden_users.add(d, name, uuid)
         except eden_users.EdenUsersError as e:
             return {'error': str(e)}
-        entry['eden_user'] = uuid
+        entry[variant.profile_key] = uuid
         save(data)
     return {'uuid': uuid, 'save_dir': eden_users.save_dir_name(uuid)}
 
 
-def eden_launch_index(data_dir):
+def eden_launch_index(data_dir, variant=EDEN):
     """Eden's -u value for the current profile in the install at ``data_dir``,
     or None to launch as before."""
-    user = eden_user(create=True, data_dir=data_dir)
+    user = eden_user(create=True, data_dir=data_dir, **_variant_kw(variant))
     if not user or 'uuid' not in user:
         return None
     from . import eden_users

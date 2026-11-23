@@ -29,32 +29,31 @@ import re
 import shutil
 from pathlib import Path
 
+from .eden_family import EDEN
 from .emulator_saves import eden_data_dirs, eden_is_running
 
 log = logging.getLogger(__name__)
 
 # Same two install kinds emulator_saves.EDEN_DATA_DIRS covers, on the config
 # side of XDG rather than the data side.
-EDEN_CONFIG_DIRS = (
-    '~/.var/app/dev.eden_emu.eden/config/eden',
-    '~/.config/eden',
-)
+EDEN_CONFIG_DIRS = EDEN.config_dirs
 
 _SECTION = '[UI]'
 _ARRAY = 'Paths\\external_content_dirs'
 
 
-def config_path(extra_config_dir=None):
+def config_path(extra_config_dir=None, variant=EDEN):
     """Eden's qt-config.ini, or None when no Eden config exists.
 
     ``extra_config_dir`` is exclusive for the same reason eden_data_dirs' is:
     naming an install means that install, and silently falling back would write
-    into an emulator the caller never named.
+    into an emulator the caller never named. ``variant`` picks the Eden-family
+    emulator (eden_family); Eden by default.
     """
     if extra_config_dir:
         candidate = Path(extra_config_dir).expanduser() / 'qt-config.ini'
         return candidate if candidate.is_file() else None
-    for directory in EDEN_CONFIG_DIRS:
+    for directory in variant.config_dirs:
         candidate = Path(directory).expanduser() / 'qt-config.ini'
         if candidate.is_file():
             return candidate
@@ -500,9 +499,12 @@ def add_ons_enabled(title_id, extra_config_dir=None):
     }
 
 
-def _setting(section, key, extra_config_dir=None):
+def _setting(section, key, extra_config_dir=None, variant=EDEN):
     """One value from Eden's config, unquoted, or ''."""
-    path = config_path(extra_config_dir)
+    if variant is EDEN:
+        path = config_path(extra_config_dir)
+    else:
+        path = config_path(extra_config_dir, variant)
     if path is None:
         return ''
     try:

@@ -21,6 +21,8 @@ import struct
 import tempfile
 from pathlib import Path
 
+from .eden_family import EDEN
+
 PROFILES_PATH = ('nand', 'system', 'save', '8000000000000010', 'su', 'avators', 'profiles.dat')
 _HEADER = 0x10
 _SLOT = 0xC8
@@ -68,7 +70,7 @@ def users(data_dir):
     return out
 
 
-def create_default(data_dir):
+def create_default(data_dir, variant=EDEN):
     """Write the user list Eden makes on its first start, when there is none.
 
     Eden creates one user named "Eden" with a random id the first time it
@@ -76,6 +78,8 @@ def create_default(data_dir):
     profile get its own user before Eden has ever been opened; Eden reads it
     as if it had made it, and its default user stays the first profile's.
     An existing file is never touched. Returns True when the file was written.
+    ``variant`` picks the Eden-family emulator, whose default user name is
+    written; Eden by default.
     """
     path = profiles_file(data_dir)
     if path.exists():
@@ -84,7 +88,7 @@ def create_default(data_dir):
     raw = secrets.token_bytes(16)
     data[_HEADER:_HEADER + 16] = raw
     data[_HEADER + 16:_HEADER + 32] = raw
-    data[_HEADER + _NAME_AT:_HEADER + _NAME_AT + _NAME_LEN] = _encode_name('Eden')
+    data[_HEADER + _NAME_AT:_HEADER + _NAME_AT + _NAME_LEN] = _encode_name(variant.default_user_name)
     path.parent.mkdir(parents=True, exist_ok=True)
     _write(path, data)
     return True

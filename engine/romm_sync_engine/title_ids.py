@@ -533,7 +533,9 @@ def _content_rank(path, prod_keys=None):
     if Path(path).suffix.lower() not in _SWITCH_CONTAINERS:
         return 0
     try:
-        info = switch_content(path, prod_keys=prod_keys)
+        # Unfiltered: a Switch 2 base and its update compete for one entry
+        # just the same, and save matching needs the "04" kind to pick.
+        info = switch_content(path, prod_keys=prod_keys, include_switch2=True)
     except Exception as e:
         log.debug("could not read the content type of %s: %s", path, e)
         return 0
@@ -600,20 +602,23 @@ def _is_switch2_id(info):
     return bool(info) and str(info.get('title_id') or '').startswith('04')
 
 
-def switch_content(path, prod_keys=None):
+def switch_content(path, prod_keys=None, include_switch2=False):
     """What Switch content ``path`` holds, or None. See _switch_content.
 
-    None for Switch 2 content: see _is_switch2_id.
+    None for Switch 2 content (see _is_switch2_id) unless ``include_switch2``:
+    ranking a base game over its update needs the kind of a "04" title too,
+    and nothing installs on the strength of a ranking.
     """
     info = _switch_content(path, prod_keys=prod_keys)
-    return None if _is_switch2_id(info) else info
+    return None if _is_switch2_id(info) and not include_switch2 else info
 
 
-def switch_content_from_name(name):
+def switch_content_from_name(name, include_switch2=False):
     """switch_content's answer for a name alone. None for Switch 2 content
-    (see _is_switch2_id); see _switch_content_from_name."""
+    (see _is_switch2_id) unless ``include_switch2``; see
+    _switch_content_from_name."""
     info = _switch_content_from_name(name)
-    return None if _is_switch2_id(info) else info
+    return None if _is_switch2_id(info) and not include_switch2 else info
 
 
 def _switch_content(path, prod_keys=None):

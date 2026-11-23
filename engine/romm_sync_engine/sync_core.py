@@ -4662,9 +4662,13 @@ class RomMClient:
 
             def _switch_content_row(rom):
                 slug = str(rom.get('platform_slug') or '').strip().lower()
-                return (slug == 'switch'
+                # The Switch family: a Switch 2 base/update/DLC group needs the
+                # same ranking. The readers here only pick the tile; add-on
+                # install keeps its own filtered call and still rejects "04".
+                return (slug in SWITCH_FAMILY
                         or bool(title_ids.switch_content_from_name(
-                            rom.get('fs_name') or rom.get('name') or '')))
+                            rom.get('fs_name') or rom.get('name') or '',
+                            include_switch2=True)))
             # Gated broadly: a scene dump group ("v-..._v196608.nsp" beside
             # "v-..._nsw.xci") has NO name a title-ID regex can read, and
             # name-gating alone would leave exactly those groups falling
@@ -4674,7 +4678,8 @@ class RomMClient:
             if any(_switch_content_row(r) for r in candidates):
                 def _switch_key(rom):
                     info = title_ids.switch_content_from_name(
-                        rom.get('fs_name') or rom.get('name') or '')
+                        rom.get('fs_name') or rom.get('name') or '',
+                        include_switch2=True)
                     # Unidentifiable rows sort with the base games rather than
                     # last: a group whose base is untagged is still a group
                     # whose add-ons must not win it.

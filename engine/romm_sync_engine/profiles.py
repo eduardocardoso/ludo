@@ -301,7 +301,8 @@ def eden_user(create=False, data_dir=None, variant=EDEN):
         if not create:
             return {'error': f'This profile has no {label} user yet'}
         if emulator_saves.eden_is_running(**kw):
-            return {'error': f'Close {label} so Ludo can add this profile as an {label} user'}
+            article = 'an' if label[:1].upper() in 'AEIOU' else 'a'
+            return {'error': f'Close {label} so Ludo can add this profile as {article} {label} user'}
         name = entry.get('name') or entry.get('username') or 'Player'
         try:
             for d in missing:

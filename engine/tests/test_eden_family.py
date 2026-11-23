@@ -1,4 +1,4 @@
-"""The Eden-family emulator descriptor, with Eden as its only member so far.
+"""The Eden-family emulator descriptor, as Eden uses it.
 
 Run with `python3 engine/tests/test_eden_family.py`. No emulator required:
 homes and /proc trees are synthesised in temp directories.
@@ -82,8 +82,8 @@ def test_module_constants_are_edens_record():
     check('EDEN_CONFIG_DIRS', C.EDEN_CONFIG_DIRS, EDEN.config_dirs)
 
 
-def test_eden_is_the_only_variant():
-    check('variants', eden_family.VARIANTS, (EDEN,))
+def test_eden_is_the_first_variant():
+    check('eden first', eden_family.VARIANTS[0], EDEN)
 
 
 def test_descriptor_is_immutable():
@@ -248,7 +248,7 @@ def main():
     for test in (
         test_eden_record_holds_todays_values,
         test_module_constants_are_edens_record,
-        test_eden_is_the_only_variant,
+        test_eden_is_the_first_variant,
         test_descriptor_is_immutable,
         test_process_scan_finds_eden_in_a_fake_proc_tree,
         test_process_scan_with_no_eden,

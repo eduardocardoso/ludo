@@ -54,4 +54,26 @@ EDEN = EdenVariant(
     default_user_name='Eden',
 )
 
-VARIANTS = (EDEN,)
+# The Eden fork that runs Switch 2 games. AppImage only, so no flatpak folders.
+LICHII = EdenVariant(
+    key='lichii',
+    name='Lichii',
+    data_dirs=('~/.local/share/lichii',),
+    config_dirs=('~/.config/lichii',),
+    data_dir_env='LICHII_DATA_DIR',
+    settings_key='lichii_data_dir',
+    profile_key='lichii_user',
+    # Prefixes, so 'lichii.appimage' and the release's 'lichii-linux-x86_64'
+    # match too. Neither name is a prefix of the other's, so a running Eden is
+    # never taken for Lichii, nor the reverse.
+    process_names=('lichii',),
+    default_user_name='Lichii',
+)
+
+VARIANTS = (EDEN, LICHII)
+
+
+def variant_for_key(key):
+    """The Eden-family emulator launched under STANDALONE_EMULATORS ``key``,
+    or None when ``key`` is not one."""
+    return next((v for v in VARIANTS if v.key == key), None)

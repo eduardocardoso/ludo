@@ -255,6 +255,11 @@ def _first_eden_user_list(data_dir=None, variant=EDEN):
     return [target] if eden_users.users(target) is not None else []
 
 
+def _users_taken(entry, data, variant):
+    """The Emulator user ids Profiles other than ``entry`` play as."""
+    return {p.get(variant.profile_key) for p in data['profiles'] if p is not entry}
+
+
 def _user_named_after(entry, data, listed, variant):
     """The id of a listed Emulator user whose name is exactly the profile's
     name or username, or None.
@@ -265,7 +270,7 @@ def _user_named_after(entry, data, listed, variant):
     another profile already plays as is never shared.
     """
     wanted = {entry.get('name'), entry.get('username')} - {None, ''}
-    taken = {p.get(variant.profile_key) for p in data['profiles'] if p is not entry}
+    taken = _users_taken(entry, data, variant)
     for user in listed:
         if user['name'] in wanted and user['uuid'] not in taken:
             return user['uuid']
@@ -311,9 +316,15 @@ def eden_user(create=False, data_dir=None, variant=EDEN):
         chosen = listed[index] if 0 <= index < len(listed) else (listed[0] if listed else None)
         if chosen is None:
             return {'error': f'{label} has no users'}
-        uuid = chosen['uuid']
-        entry[variant.profile_key] = uuid
-        save(data)
+        # Unless another Profile already plays as that user: one adopted by
+        # name may be the one selected. Two Profiles never share a user, so the
+        # default Profile then takes the path every other Profile takes (adopt
+        # by name, else get its own user) rather than another listed user,
+        # whose saves would belong to nobody it can tell.
+        if chosen['uuid'] not in _users_taken(entry, data, variant):
+            uuid = chosen['uuid']
+            entry[variant.profile_key] = uuid
+            save(data)
     if not uuid:
         adopted = _user_named_after(entry, data, eden_users.users(dirs[0]) or [], variant)
         if adopted:
@@ -330,7 +341,7 @@ def eden_user(create=False, data_dir=None, variant=EDEN):
         name = entry.get('name') or entry.get('username') or 'Player'
         try:
             for d in missing:
-                uuid = eden_users.add(d, name, uuid)
+                uuid = eden_users.add(d, name, uuid, **kw)
         except eden_users.EdenUsersError as e:
             return {'error': str(e)}
         entry[variant.profile_key] = uuid

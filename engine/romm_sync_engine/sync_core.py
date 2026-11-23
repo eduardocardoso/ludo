@@ -1738,6 +1738,18 @@ def standalone_emulator_for_platform(platform_name, platform_slug=None):
     return None
 
 
+def installs_switch_add_ons(platform_slug, platform_name=None):
+    """True unless the platform routes to an emulator other than Eden.
+
+    Add-on install writes into Eden's NAND. A Switch 2 Edition upgrade is a
+    switch-2 ROM whose container carries a Switch ("01") ID, which the "04"
+    filter in title_ids cannot catch; the Platform's route can. A platform
+    with no route at all keeps today's behaviour.
+    """
+    match = standalone_emulator_for_platform(platform_name, platform_slug)
+    return match is None or match[0] == 'eden'
+
+
 def standalone_routes():
     """{lowercase platform slug or name: standalone emulator key}.
 
@@ -4662,9 +4674,13 @@ class RomMClient:
 
             def _switch_content_row(rom):
                 slug = str(rom.get('platform_slug') or '').strip().lower()
-                return (slug == 'switch'
+                # The Switch family: a Switch 2 base/update/DLC group needs the
+                # same ranking. The readers here only pick the tile; add-on
+                # install keeps its own filtered call and still rejects "04".
+                return (slug in SWITCH_FAMILY
                         or bool(title_ids.switch_content_from_name(
-                            rom.get('fs_name') or rom.get('name') or '')))
+                            rom.get('fs_name') or rom.get('name') or '',
+                            include_switch2=True)))
             # Gated broadly: a scene dump group ("v-..._v196608.nsp" beside
             # "v-..._nsw.xci") has NO name a title-ID regex can read, and
             # name-gating alone would leave exactly those groups falling
@@ -4674,7 +4690,8 @@ class RomMClient:
             if any(_switch_content_row(r) for r in candidates):
                 def _switch_key(rom):
                     info = title_ids.switch_content_from_name(
-                        rom.get('fs_name') or rom.get('name') or '')
+                        rom.get('fs_name') or rom.get('name') or '',
+                        include_switch2=True)
                     # Unidentifiable rows sort with the base games rather than
                     # last: a group whose base is untagged is still a group
                     # whose add-ons must not win it.
@@ -9539,8 +9556,10 @@ class RetroArchInterface:
             index = profiles.eden_launch_index(data_dir, **kw)
             if index is None:
                 return []
-            # The boot user picker would override -u.
-            eden_config.disable_select_user_on_boot(**kw)
+            # The boot user picker would override -u. Turned off in the
+            # launched install's config, not whichever one is found first.
+            eden_config.disable_select_user_on_boot(
+                emulator_saves.eden_config_dir_for(executable, **kw), **kw)
             return ['-u', str(index)]
         except Exception as e:
             logging.warning(f"{variant.name} user for this profile unavailable: {e}")
@@ -16053,8 +16072,8 @@ class AutoSyncManager:
                 if owner:
                     # Another emulator's game (a Switch 1 save made in
                     # Lichii): see _rom_for_save_title.
-                    left_out.append(f"{title_id} (a {STANDALONE_EMULATORS[owner]['name']}"
-                                    " game)")
+                    left_out.append(f"{title_id} (owned by "
+                                    f"{STANDALONE_EMULATORS[owner]['name']})")
                 elif variant is EDEN:
                     # No local ROM carries this title ID. Without Sigil the ID
                     # is only legible in a ROM's filename, so an unmatched save
@@ -18905,18 +18924,34 @@ class AutoSyncManager:
                     # from the filename — the difference between matching a
                     # plainly-named dump and not.
                     prod_keys = emulator_saves.find_prod_keys()
+                    every = {}
                     for tid, path in title_ids.index_roms(
-                            [rom_dir], prod_keys=prod_keys).items():
+                            [rom_dir], prod_keys=prod_keys, every=every).items():
                         # Reuse the name-based tiers to turn the ROM file into a
                         # rom_id. The suffix is irrelevant to them; only the stem
                         # is compared.
                         key = self._title_id_key(tid)
-                        if not key or key in self._title_id_index:
+                        # Candidates matter only to the Eden family's save
+                        # owner (_rom_for_save_title); every other title keeps
+                        # the one lookup it had.
+                        switch = bool(title_ids.base_switch_title_id(tid))
+                        if not key or (not switch and key in self._title_id_index):
                             continue
                         rom_id = self.find_rom_id_for_save_file(
                             path.with_suffix('.srm'))
-                        if rom_id:
+                        self._note_title_rom(key, rom_id)
+                        if rom_id and key not in self._title_id_index:
                             self._title_id_index[key] = rom_id
+                        # Every local ROM carrying the title is a candidate,
+                        # even when a tier above or a better-ranked file here
+                        # already claimed it: a plainly named Switch 2 Edition
+                        # is identified only by its container, and without
+                        # this its Lichii save matches no ROM routed to Lichii.
+                        for other in (every.get(tid, ()) if switch else ()):
+                            if other != path:
+                                self._note_title_rom(
+                                    key, self.find_rom_id_for_save_file(
+                                        other.with_suffix('.srm')))
                     logging.debug(
                         f"title-ID index: {len(self._title_id_index)} ROMs identified")
             except Exception as e:
@@ -20663,7 +20698,9 @@ class CollectionSyncManager:
                 # A Switch update or DLC is inert until it is in Eden's
                 # registered cache, so arriving is not the end of the job the
                 # way it is for every other file here. No-op for anything else.
-                if local_path.suffix.lower() in ('.nsp', '.xci'):
+                if (local_path.suffix.lower() in ('.nsp', '.xci')
+                        and installs_switch_add_ons(rom.get('platform_slug'),
+                                                    rom.get('platform_name'))):
                     self.install_switch_add_on(local_path)
                 downloaded_count += rom_file_count
                 sync_done += 1

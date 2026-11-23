@@ -129,17 +129,19 @@ def _encode_name(name):
     return raw.ljust(_NAME_LEN, b'\0')
 
 
-def add(data_dir, name, uuid_hex=None):
+def add(data_dir, name, uuid_hex=None, variant=EDEN):
     """Add a user in the first free slot and return its uuid (hex).
 
     ``uuid_hex`` reuses an id, so one Ludo profile is the same Eden user in
     every Eden install on the machine. Eden must be closed: it rewrites the
-    file from memory when it saves its own changes.
+    file from memory when it saves its own changes. ``variant`` names the
+    Eden-family emulator in errors; Eden by default.
     """
     path = profiles_file(data_dir)
     data = _read(data_dir)
     if data is None:
-        raise EdenUsersError('Eden has no user list yet; start Eden once first')
+        raise EdenUsersError(f'{variant.name} has no user list yet; '
+                             f'start {variant.name} once first')
     raw = bytes.fromhex(uuid_hex) if uuid_hex else secrets.token_bytes(16)
     if len(raw) != 16 or not any(raw):
         raise EdenUsersError('Invalid user id')

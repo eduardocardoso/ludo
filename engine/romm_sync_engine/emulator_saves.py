@@ -162,6 +162,20 @@ def eden_data_dir_for(executable, variant=EDEN):
                 or variant.data_dirs[-1]).expanduser()
 
 
+def eden_config_dir_for(executable, variant=EDEN):
+    """The config directory the Eden at ``executable`` uses, existing or not.
+
+    eden_data_dir_for's twin: with a flatpak and an AppImage both on disk,
+    config_path alone takes the first config it finds (the flatpak one), which
+    is not the install a native launch reads.
+    """
+    if str(executable or '').startswith('flatpak:'):
+        flatpak = [d for d in variant.config_dirs if _is_flatpak_dir(d)]
+        if flatpak:
+            return Path(flatpak[0]).expanduser()
+    return Path(variant.config_dirs[-1]).expanduser()
+
+
 def eden_install_data_dir(variant=EDEN):
     """Data directory of the Eden Ludo would launch, or None when no Eden is
     installed. Unlike eden_data_dirs, it need not exist yet: Eden makes it on
@@ -307,7 +321,8 @@ def find_eden_saves(extra_data_dir=None, variant=EDEN):
     for data_dir in dirs:
         root = data_dir.joinpath(*_EDEN_SAVE_ROOT)
         if not root.is_dir():
-            log.debug("no Eden save tree at %s (not booted a game yet)", root)
+            log.debug("no %s save tree at %s (not booted a game yet)",
+                      variant.name, root)
             continue
         if user:
             mine = root / ('0' * 16) / user['save_dir']

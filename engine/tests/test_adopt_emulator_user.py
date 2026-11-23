@@ -174,6 +174,28 @@ def test_user_held_by_another_profile_is_not_adopted(variant):
         check('one more user', len(names(data)), len([first, 'Mia', 'Mia']))
 
 
+def test_default_profile_skips_a_selected_user_another_profile_holds(variant):
+    """The emulator's selected user can be one another Profile adopted by name.
+    The default Profile then gets its own user instead of sharing it."""
+    first = variant.name
+    with emulator_with_users(variant, 'Mia') as data:
+        home = data.parents[2]
+        ini = home / '.config' / variant.key / 'qt-config.ini'
+        ini.parent.mkdir(parents=True, exist_ok=True)
+        ini.write_text('[System]\ncurrent_user=1\n')
+        mia = P.create('Mia')
+        use(mia)
+        check('Mia adopts her user', user(variant)['uuid'], uuid_of(data, 'Mia'))
+        use(P.DEFAULT)
+        got = user(variant)
+        check('default does not share Mia\'s user',
+              got.get('uuid') != uuid_of(data, 'Mia'), True)
+        check('default\'s user is listed', U.find(data, got.get('uuid')) is not None, True)
+        check('one user added', len(names(data)), len([first, 'Mia', 'default']))
+        stored = {P.get(P.load(), pid).get(variant.profile_key) for pid in (P.DEFAULT, mia)}
+        check('two profiles, two users', len(stored), 2)
+
+
 def test_eden_and_lichii_adopt_separately():
     """Adopting a Lichii user leaves the Eden one alone, and the reverse."""
     with emulator_with_users(LICHII, 'Mia') as lichii:
@@ -202,6 +224,7 @@ def main():
             test_stored_user_missing_from_the_list_is_not_swapped,
             test_default_profile_keeps_the_selected_user,
             test_user_held_by_another_profile_is_not_adopted,
+            test_default_profile_skips_a_selected_user_another_profile_holds,
         ):
             print(f"-- {test.__name__} [{variant.key}]")
             test(variant)

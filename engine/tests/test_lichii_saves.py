@@ -237,6 +237,45 @@ def test_lichii_data_dir_setting():
               by_label(m._eden_inventory_entries()), {('Lichii', 2)})
 
 
+def named_game(rom_id, slug, stem):
+    """A library row known only by its filename: no server title ID."""
+    return {'rom_id': rom_id, 'platform_slug': slug, 'name': stem,
+            'file_name': f'{stem}.nsp',
+            'romm_data': {'fs_name': f'{stem}.nsp', 'fs_name_no_ext': stem,
+                          'platform_slug': slug}}
+
+
+def test_plainly_named_edition_rom_is_found_by_its_container():
+    """A Switch 2 Edition ROM named plainly is identified only by reading the
+    local container. It must still be a candidate for its title, whether or
+    not another ROM claimed the title first."""
+    cases = {
+        'switch ROM claimed by the server': (
+            [game(4, 'switch', EDITION), named_game(5, 'switch-2', 'Zelda NS2 Edition')],
+            ['switch-2/Zelda NS2 Edition.nsp']),
+        'both ROMs local and plainly named': (
+            [named_game(4, 'switch', 'Zelda'), named_game(5, 'switch-2', 'Zelda NS2 Edition')],
+            ['switch/Zelda.nsp', 'switch-2/Zelda NS2 Edition.nsp']),
+    }
+    for label, (games, files) in cases.items():
+        with inventory_env() as (home, _records), \
+                patch.object(T, 'title_id_from_rom', lambda path, **kw: EDITION):
+            roms = home / 'roms'
+            for f in files:
+                (roms / f).parent.mkdir(parents=True, exist_ok=True)
+                (roms / f).write_bytes(b'')
+            nand_save(home, 'eden', EDITION)
+            nand_save(home, 'lichii', EDITION)
+            m = manager(games)
+            # What the filename tiers read, beyond the inventory's needs.
+            m._rom_match_cache, m._rom_match_games = {}, None
+            m._rom_id_for_launch_alias = lambda *a: None
+            m.settings = type('S', (), {'get': lambda self, section, key, *a: (
+                str(roms) if (section, key) == ('Download', 'rom_directory') else '')})()
+            check(f'{label}: each emulator uploads its own ROM',
+                  by_label(m._eden_inventory_entries()), {('Eden', 4), ('Lichii', 5)})
+
+
 def main():
     test_title_ids()
     test_add_ons_stay_switch_only()
@@ -246,6 +285,7 @@ def main():
     test_no_switch2_library_leaves_lichii_alone()
     test_lichii_running_defers_only_lichii()
     test_lichii_data_dir_setting()
+    test_plainly_named_edition_rom_is_found_by_its_container()
     print()
     if FAILURES:
         print(f"{len(FAILURES)} FAILED: {', '.join(FAILURES)}")

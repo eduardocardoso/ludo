@@ -84,7 +84,7 @@ try:
         build_sync_status, is_path_validly_downloaded, detect_retrodeck,
         platform_folder_candidates,
         flatpak_app_installed,
-        STANDALONE_EMULATORS, find_standalone_builds,
+        STANDALONE_EMULATORS, find_standalone_builds, installs_switch_add_ons,
         _extract_archive, _archive_member_names, arcade_romset_stays_zipped, WIIU_SLUGS, resolve_wiiu_rom,
         get_desktop_tile_status, add_desktop_tile, remove_desktop_tile,
         drain_notifications as _drain_notifications,
@@ -11332,8 +11332,11 @@ class LudoBackend:
                     # pulls whatever patches and add-ons the library holds for
                     # it -- the user asked for the game, and a game whose patch
                     # sits undownloaded beside it is not the game they meant.
+                    # Only for a game routed to Eden: the install writes into
+                    # Eden's NAND, and a Switch 2 Edition upgrade (a switch-2
+                    # ROM with a Switch ID) would otherwise land there.
                     sweep = (self._handle_switch_add_ons(rom_id, final, _on_progress)
-                             if ok else None)
+                             if ok and installs_switch_add_ons(platform_slug) else None)
                     # `g` was resolved before the download started, which can be
                     # minutes ago — long enough for the 5-minute library refresh
                     # to have replaced _available_games. Re-resolve now, or a rom

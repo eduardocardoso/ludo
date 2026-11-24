@@ -3,7 +3,7 @@
 Eden keeps up to eight users in one fixed-size file (source:
 src/core/hle/service/acc/profile_manager.cpp):
 
-    nand/system/save/8000000000000010/su/avators/profiles.dat
+    <NAND root>/system/save/8000000000000010/su/avators/profiles.dat
     0x10 bytes header (unused), then 8 slots of 0xC8:
       +0x00 uuid (16 bytes)   +0x10 uuid again   +0x20 u64 timestamp
       +0x28 username (32 bytes UTF-8, NUL padded)   +0x48 0x80 bytes extra
@@ -11,7 +11,10 @@ src/core/hle/service/acc/profile_manager.cpp):
 An all-zero uuid is an empty slot. Eden lists the valid slots in file order,
 and its ``-u <n>`` launch option picks the n-th of those.
 
-Each user's saves live in nand/user/save/0000000000000000/<id>/<TITLE_ID>,
+The NAND root is the emulator's configured nand_directory, else
+<data dir>/nand (see eden_storage). Each user's saves live under the save
+root, likewise its save_directory or <data dir>/nand, in
+<save root>/user/save/0000000000000000/<id>/<TITLE_ID>,
 where <id> is the uuid's 16 bytes in reverse order as upper-case hex
 (savedata_factory.cpp prints the two little-endian u64 halves high first).
 """
@@ -21,9 +24,12 @@ import struct
 import tempfile
 from pathlib import Path
 
+from . import eden_storage
 from .eden_family import EDEN
 
-PROFILES_PATH = ('nand', 'system', 'save', '8000000000000010', 'su', 'avators', 'profiles.dat')
+# Relative to the NAND root (eden_storage.nand_dir), which is <data dir>/nand
+# unless the emulator's config moves it.
+PROFILES_PATH = ('system', 'save', '8000000000000010', 'su', 'avators', 'profiles.dat')
 _HEADER = 0x10
 _SLOT = 0xC8
 MAX_USERS = 8
@@ -36,12 +42,14 @@ class EdenUsersError(Exception):
     pass
 
 
-def profiles_file(data_dir):
-    return Path(data_dir).joinpath(*PROFILES_PATH)
+def profiles_file(data_dir, variant=EDEN):
+    """profiles.dat of the install at ``data_dir``, under the NAND root its
+    config names."""
+    return eden_storage.nand_dir(data_dir, variant).joinpath(*PROFILES_PATH)
 
 
-def _read(data_dir):
-    path = profiles_file(data_dir)
+def _read(data_dir, variant=EDEN):
+    path = profiles_file(data_dir, variant)
     try:
         data = path.read_bytes()
     except OSError:
@@ -51,10 +59,10 @@ def _read(data_dir):
     return bytearray(data[:_SIZE])
 
 
-def users(data_dir):
+def users(data_dir, variant=EDEN):
     """Valid users in Eden's order: [{'index', 'uuid' (hex), 'name', 'save_dir'}].
     None when Eden has no readable user file (it has never run)."""
-    data = _read(data_dir)
+    data = _read(data_dir, variant)
     if data is None:
         return None
     out = []
@@ -81,7 +89,7 @@ def create_default(data_dir, variant=EDEN):
     ``variant`` picks the Eden-family emulator, whose default user name is
     written; Eden by default.
     """
-    path = profiles_file(data_dir)
+    path = profiles_file(data_dir, variant)
     if path.exists():
         return False
     data = bytearray(_SIZE)
@@ -110,8 +118,8 @@ def save_dir_name(uuid_hex):
     return bytes.fromhex(uuid_hex)[::-1].hex().upper()
 
 
-def find(data_dir, uuid_hex):
-    for user in users(data_dir) or []:
+def find(data_dir, uuid_hex, variant=EDEN):
+    for user in users(data_dir, variant) or []:
         if user['uuid'] == uuid_hex:
             return user
     return None
@@ -129,17 +137,19 @@ def _encode_name(name):
     return raw.ljust(_NAME_LEN, b'\0')
 
 
-def add(data_dir, name, uuid_hex=None):
+def add(data_dir, name, uuid_hex=None, variant=EDEN):
     """Add a user in the first free slot and return its uuid (hex).
 
     ``uuid_hex`` reuses an id, so one Ludo profile is the same Eden user in
     every Eden install on the machine. Eden must be closed: it rewrites the
-    file from memory when it saves its own changes.
+    file from memory when it saves its own changes. ``variant`` names the
+    Eden-family emulator in errors; Eden by default.
     """
-    path = profiles_file(data_dir)
-    data = _read(data_dir)
+    path = profiles_file(data_dir, variant)
+    data = _read(data_dir, variant)
     if data is None:
-        raise EdenUsersError('Eden has no user list yet; start Eden once first')
+        raise EdenUsersError(f'{variant.name} has no user list yet; '
+                             f'start {variant.name} once first')
     raw = bytes.fromhex(uuid_hex) if uuid_hex else secrets.token_bytes(16)
     if len(raw) != 16 or not any(raw):
         raise EdenUsersError('Invalid user id')

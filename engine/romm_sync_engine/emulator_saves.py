@@ -31,19 +31,20 @@ import time
 import zipfile
 from pathlib import Path
 
-from . import title_ids
+from . import eden_storage, title_ids
 from .eden_family import EDEN, LICHII
 from .paths import machine_cache_dir
 
 log = logging.getLogger(__name__)
 
-# Eden's save tree, relative to its data directory. Only the leaf is uncertain:
-# savedata_factory resolves account saves under either
+# Eden's save tree is <save root>/user/save, where the save root is the
+# save_directory the emulator's own config names, else <data dir>/nand
+# (eden_storage.save_tree, which documents the precedence). Only the leaf is
+# uncertain: savedata_factory resolves account saves under either
 # "save/<device id>/<user id>/<title id>" or "save/account/<user id>", and a
 # device save drops the user level entirely. Rather than encode a depth that is
 # right for one of those and silently wrong for the others, the walk below
 # searches for the title-ID-shaped component at any depth within _MAX_DEPTH.
-_EDEN_SAVE_ROOT = ('nand', 'user', 'save')
 
 # Installed system firmware. Flat: a live install holds 229 .nca files here and
 # no subdirectories at all.
@@ -288,14 +289,16 @@ def _newest_mtime(directory):
     return newest
 
 
-def _profile_eden_user():
+def _profile_eden_user(variant=EDEN):
     """The current profile's Eden user (see profiles.eden_user): None when
     profiles are not in use, else {'save_dir'} or {'error'}."""
     from . import profiles
-    return profiles.eden_user(create=True)
+    if variant is EDEN:
+        return profiles.eden_user(create=True)
+    return profiles.eden_user(create=True, variant=variant)
 
 
-def find_eden_saves(extra_data_dir=None):
+def find_eden_saves(extra_data_dir=None, variant=EDEN):
     """Every Eden save on disk, as dicts of {title_id, path, modified}.
 
     Empty save directories are skipped — Eden creates one for a game the moment
@@ -304,16 +307,23 @@ def find_eden_saves(extra_data_dir=None):
 
     With profiles, only the current profile's Eden user is looked at: the
     other users' saves belong to other people's RomM accounts.
+
+    ``variant`` picks the Eden-family emulator (eden_family); Eden by default.
     """
     best = {}
-    user = _profile_eden_user()
+    # Eden's calls stay exactly as they were: tests stub both helpers with
+    # narrow lambdas.
+    user = _profile_eden_user() if variant is EDEN else _profile_eden_user(variant)
     if user and 'error' in user:
-        log.info("Eden saves skipped for this profile: %s", user['error'])
+        log.info("%s saves skipped for this profile: %s", variant.name, user['error'])
         return []
-    for data_dir in eden_data_dirs(extra_data_dir):
-        root = data_dir.joinpath(*_EDEN_SAVE_ROOT)
+    dirs = (eden_data_dirs(extra_data_dir) if variant is EDEN
+            else eden_data_dirs(extra_data_dir, variant=variant))
+    for data_dir in dirs:
+        root = eden_storage.save_tree(data_dir, variant)
         if not root.is_dir():
-            log.debug("no Eden save tree at %s (not booted a game yet)", root)
+            log.debug("no %s save tree at %s (not booted a game yet)",
+                      variant.name, root)
             continue
         if user:
             mine = root / ('0' * 16) / user['save_dir']
@@ -1049,29 +1059,39 @@ def close_eden(timeout=10.0):
     return not eden_pids()
 
 
-def eden_restore_dir(title_id, extra_data_dir=None):
+def eden_restore_dir(title_id, extra_data_dir=None, variant=EDEN):
     """Where a save for ``title_id`` belongs on this device, or None if unknown.
 
     A title that has a save uses that directory. One that has never booted can
     still be placed when this Eden has exactly one real user: the folder is
     then a fact, not a guess. No profile or several means Eden has to boot it
     first, because a save under the wrong user is invisible to the player.
+
+    ``variant`` picks the Eden-family emulator (eden_family); Eden by default.
     """
-    for save in find_eden_saves(extra_data_dir):
+    # Eden's calls stay exactly as they were: tests stub these helpers with
+    # narrow lambdas.
+    if variant is EDEN:
+        saves = find_eden_saves(extra_data_dir)
+    else:
+        saves = find_eden_saves(extra_data_dir, variant=variant)
+    for save in saves:
         if save['title_id'].lower() == title_id.lower():
             return save['path']
-    user = _profile_eden_user()
+    user = _profile_eden_user() if variant is EDEN else _profile_eden_user(variant)
+    dirs = (eden_data_dirs(extra_data_dir) if variant is EDEN
+            else eden_data_dirs(extra_data_dir, variant=variant))
     if user:
         # A profile's own Eden user: the folder is known, never a guess.
         if 'error' in user:
             return None
-        dirs = eden_data_dirs(extra_data_dir)
         if not dirs:
             return None
-        return dirs[0].joinpath(*_EDEN_SAVE_ROOT, '0' * 16, user['save_dir'], title_id.upper())
+        return (eden_storage.save_tree(dirs[0], variant)
+                / ('0' * 16) / user['save_dir'] / title_id.upper())
     users, first = set(), None
-    for data_dir in eden_data_dirs(extra_data_dir):
-        root = data_dir.joinpath(*_EDEN_SAVE_ROOT, '0' * 16)
+    for data_dir in dirs:
+        root = eden_storage.save_tree(data_dir, variant) / ('0' * 16)
         try:
             found = [d for d in root.iterdir() if d.is_dir() and d.name.strip('0')]
         except OSError:
@@ -1083,7 +1103,7 @@ def eden_restore_dir(title_id, extra_data_dir=None):
     return None
 
 
-def unpack_save(zip_path, title_id, extra_data_dir=None, backup_dir=None):
+def unpack_save(zip_path, title_id, extra_data_dir=None, backup_dir=None, variant=EDEN):
     """Restore a packed save into Eden's tree for `title_id`.
 
     The mirror of pack_save, but the write direction cannot be a mirror of the
@@ -1106,15 +1126,27 @@ def unpack_save(zip_path, title_id, extra_data_dir=None, backup_dir=None):
     Returns {'path', 'files', 'backup'}. Raises FileNotFoundError when Eden or
     the title's save directory is absent, and RuntimeError when Eden is
     running.
+
+    ``variant`` picks the Eden-family emulator (eden_family) whose tree, user
+    and running check apply; Eden by default.
     """
     zip_path = Path(zip_path)
-    if eden_is_running():
-        raise RuntimeError("Eden is running; close it before restoring a save")
+    # Eden's calls stay exactly as they were: tests stub both with narrow
+    # lambdas.
+    if variant is EDEN:
+        running = eden_is_running()
+    else:
+        running = lichii_is_running() if variant is LICHII else eden_is_running(variant)
+    if running:
+        raise RuntimeError(f"{variant.name} is running; close it before restoring a save")
 
-    existing = eden_restore_dir(title_id, extra_data_dir)
+    if variant is EDEN:
+        existing = eden_restore_dir(title_id, extra_data_dir)
+    else:
+        existing = eden_restore_dir(title_id, extra_data_dir, variant=variant)
     if existing is None:
         raise FileNotFoundError(
-            f"no Eden save directory for {title_id}; boot the game once first")
+            f"no {variant.name} save directory for {title_id}; boot the game once first")
     existing.mkdir(parents=True, exist_ok=True)
 
     backup = None

@@ -40,13 +40,16 @@ from pathlib import Path
 # game code is the save's identity; the maker code names the publisher.
 _GCI_NAME_RE = re.compile(r'^[A-Z0-9]{2}-([A-Z0-9]{4})-', re.IGNORECASE)
 
-# A Switch application ID: 16 hex digits opening with "01" and closing with
-# "000". Both halves of that shape are load-bearing. The emulator's save tree
+# A Switch application ID: 16 hex digits opening with "01" (Switch) or "04"
+# (Switch 2) and closing with "000". Both halves of that shape are
+# load-bearing. The prefix never decides the Platform: a Switch 2 Edition can
+# keep its Switch 1 "01" ID, so which emulator owns a save is the matched
+# ROM's routing (see AutoSyncManager._eden_inventory_entries). The emulator's save tree
 # nests the title under one or two ID directories of its own — a device ID of
 # "0000000000000000", a user ID — which are 16 hex digits too, so length alone
 # cannot say which level names the game. Update and DLC IDs share a title's
 # prefix but end "800" and "001+", and neither owns the save.
-_SWITCH_TITLE_RE = re.compile(r'^01[0-9A-F]{11}000$', re.IGNORECASE)
+_SWITCH_TITLE_RE = re.compile(r'^0[14][0-9A-F]{11}000$', re.IGNORECASE)
 
 # "[0100152000022000]" as scene-named dumps and RomM's own filenames carry it.
 # This is the fallback when Sigil is absent: NSP/XCI store the real ID in an
@@ -56,9 +59,10 @@ _SWITCH_TITLE_RE = re.compile(r'^01[0-9A-F]{11}000$', re.IGNORECASE)
 # "0100965017338000 [2026-08-29_21-10-37].zip".
 _SWITCH_TAG_RE = re.compile(r'(?:^|[\[\(\s])([0-9A-F]{16})[\]\)\s]', re.IGNORECASE)
 
-# Any Switch title: a base game, an update, or a DLC add-on. Narrower tests
-# come from _switch_kind below.
-_SWITCH_ANY_RE = re.compile(r'^01[0-9A-F]{14}$', re.IGNORECASE)
+# Any Switch or Switch 2 title: a base game, an update, or a DLC add-on.
+# Narrower tests come from _switch_kind below. Add-ons stay Switch-only: see
+# _is_switch2_id.
+_SWITCH_ANY_RE = re.compile(r'^0[14][0-9A-F]{14}$', re.IGNORECASE)
 
 # How far a derived ID sits from its base. An update is the base with bit 11
 # set; a DLC add-on is numbered upward from the base's next multiple of 0x1000.
@@ -470,7 +474,7 @@ def title_id_from_save(path):
     return None
 
 
-def index_roms(directories, extensions=None, prod_keys=None):
+def index_roms(directories, extensions=None, prod_keys=None, every=None):
     """Build {title_id: rom_path} for the ROMs under ``directories``.
 
     Sigil reads at most a few sectors per file -- a disc header, an ISO 9660
@@ -479,6 +483,10 @@ def index_roms(directories, extensions=None, prod_keys=None):
     are skipped.
 
     ``prod_keys`` is forwarded to Sigil for Switch decryption.
+
+    ``every``, when a dict, also receives {title_id: [rom_path, ...]}: every
+    ROM that identified as the title, not only the one the index keeps. A
+    Switch 2 Edition and its Switch 1 game can carry one ID on two ROMs.
     """
     extensions = extensions or _ROM_EXTENSIONS
     index = {}
@@ -497,6 +505,8 @@ def index_roms(directories, extensions=None, prod_keys=None):
                 continue
             if not title_id:
                 continue
+            if every is not None:
+                every.setdefault(title_id, []).append(path)
             # A game, its update, and its DLC all normalise to one base ID, so
             # several ROMs can claim the same entry. The base game wins: it is
             # the title the save belongs to, and attributing a save to a DLC
@@ -529,7 +539,9 @@ def _content_rank(path, prod_keys=None):
     if Path(path).suffix.lower() not in _SWITCH_CONTAINERS:
         return 0
     try:
-        info = switch_content(path, prod_keys=prod_keys)
+        # Unfiltered: a Switch 2 base and its update compete for one entry
+        # just the same, and save matching needs the "04" kind to pick.
+        info = switch_content(path, prod_keys=prod_keys, include_switch2=True)
     except Exception as e:
         log.debug("could not read the content type of %s: %s", path, e)
         return 0
@@ -583,7 +595,39 @@ def switch_version_from_name(name):
     return int(match.group(1)) if match else None
 
 
-def switch_content(path, prod_keys=None):
+def _is_switch2_id(info):
+    """True when a switch_content answer names a Switch 2 ("04") title.
+
+    Add-on handling is Switch-only. Every downloaded .nsp/.xci reaches
+    AutoSyncManager.install_switch_add_on with no Platform check, and the add-on
+    path installs into Eden; a Switch 2 update or DLC read as an add-on would
+    land in Eden's NAND. So the content readers below answer None for it, as
+    they did before the title-ID patterns accepted "04". Save matching, which
+    does need "04", goes through is_switch_title_id/base_switch_title_id.
+    """
+    return bool(info) and str(info.get('title_id') or '').startswith('04')
+
+
+def switch_content(path, prod_keys=None, include_switch2=False):
+    """What Switch content ``path`` holds, or None. See _switch_content.
+
+    None for Switch 2 content (see _is_switch2_id) unless ``include_switch2``:
+    ranking a base game over its update needs the kind of a "04" title too,
+    and nothing installs on the strength of a ranking.
+    """
+    info = _switch_content(path, prod_keys=prod_keys)
+    return None if _is_switch2_id(info) and not include_switch2 else info
+
+
+def switch_content_from_name(name, include_switch2=False):
+    """switch_content's answer for a name alone. None for Switch 2 content
+    (see _is_switch2_id) unless ``include_switch2``; see
+    _switch_content_from_name."""
+    info = _switch_content_from_name(name)
+    return None if _is_switch2_id(info) and not include_switch2 else info
+
+
+def _switch_content(path, prod_keys=None):
     """What Switch content ``path`` holds, or None if it is not a container.
 
     Returns a dict of:
@@ -704,7 +748,7 @@ def _account_for_bundle(path, info):
     return info
 
 
-def switch_content_from_name(name):
+def _switch_content_from_name(name):
     """switch_content's answer for a name alone, without the file.
 
     The server knows a ROM's filename before anything is downloaded, so this

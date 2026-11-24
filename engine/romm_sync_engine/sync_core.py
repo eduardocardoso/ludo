@@ -19,7 +19,7 @@ from .paths import app_id, cache_dir, client_name, config_dir, library_dir, mach
 from .process_lock import ProcessLock
 from .owned_tasks import OwnedTasks
 from .save_channels import snapshots_supported
-from .eden_family import EDEN, variant_for_key
+from .eden_family import EDEN, LICHII, variant_for_key
 from . import events as _events
 from . import (cemu_saves, eden_config, emulator_saves, folder_saves, gamecube_saves,
                play_sessions, ps2_memcard, save_channels, switch_content, switch_nsz,
@@ -4674,9 +4674,13 @@ class RomMClient:
 
             def _switch_content_row(rom):
                 slug = str(rom.get('platform_slug') or '').strip().lower()
-                return (slug == 'switch'
+                # The Switch family: a Switch 2 base/update/DLC group needs the
+                # same ranking. The readers here only pick the tile; add-on
+                # install keeps its own filtered call and still rejects "04".
+                return (slug in SWITCH_FAMILY
                         or bool(title_ids.switch_content_from_name(
-                            rom.get('fs_name') or rom.get('name') or '')))
+                            rom.get('fs_name') or rom.get('name') or '',
+                            include_switch2=True)))
             # Gated broadly: a scene dump group ("v-..._v196608.nsp" beside
             # "v-..._nsw.xci") has NO name a title-ID regex can read, and
             # name-gating alone would leave exactly those groups falling
@@ -4686,7 +4690,8 @@ class RomMClient:
             if any(_switch_content_row(r) for r in candidates):
                 def _switch_key(rom):
                     info = title_ids.switch_content_from_name(
-                        rom.get('fs_name') or rom.get('name') or '')
+                        rom.get('fs_name') or rom.get('name') or '',
+                        include_switch2=True)
                     # Unidentifiable rows sort with the base games rather than
                     # last: a group whose base is untagged is still a group
                     # whose add-ons must not win it.
@@ -15905,8 +15910,96 @@ class AutoSyncManager:
         path: see _restore_standalone_save, which backs the existing save up
         before replacing it and refuses while Eden is running. Packing here
         stays read-only — nothing in this method writes into Eden's tree.
+
+        Lichii, the Eden fork that runs Switch 2, keeps the same layout in its
+        own tree and gets its own pass, labelled 'Lichii'. Guarded, so that a
+        failure there can never cost Eden its saves.
         """
+        entries = self._eden_family_inventory_entries(EDEN)
+        try:
+            entries.extend(self._eden_family_inventory_entries(LICHII))
+        except Exception as e:
+            logging.debug(f"Lichii save inventory failed: {e}")
+        return entries
+
+    def _save_owner(self, rom_id):
+        """STANDALONE_EMULATORS key of the emulator ``rom_id`` routes to, or
+        None when the library has no such game or its Platform routes nowhere."""
+        match = standalone_emulator_for_platform(
+            None, _platform_of(self._game_for_rom(rom_id)))
+        return match[0] if match else None
+
+    def _rom_for_save_title(self, title_id, variant):
+        """(rom_id, owner) for a save in ``variant``'s tree.
+
+        rom_id is None when the save is not ``variant``'s to upload; owner is
+        then the emulator the title's ROM routes to, or None when no ROM
+        matched at all.
+
+        A save's owner is the emulator its ROM is routed to (switch -> Eden,
+        switch-2 -> Lichii), never the title ID's prefix nor an Emulator label.
+        Lichii runs Switch 1 games too, so one title can have saves in both
+        trees; each inventory uploads only titles whose ROM routes to it, and
+        a Switch 1 save made in Lichii stays local. The RomM label is written
+        from the owner but is never trusted to place a save: a foreign or buggy
+        upload can carry any label. Eden alone also takes a ROM the library
+        does not list (today's behaviour), since Eden was the only owner before.
+
+        One title ID can sit on two ROMs: a Switch 2 Edition may keep its
+        Switch 1 "01" ID, and a library can hold both the switch and the
+        switch-2 ROM. _rom_id_for_title_id answers with one of them, so the
+        other ROMs carrying the ID are tried too, and the one routed to
+        ``variant`` wins. Each emulator's inventory then finds its own ROM.
+        """
+        primary = self._rom_id_for_title_id(title_id)
+        candidates = [primary] if primary else []
+        candidates += [r for r in self._title_id_rom_ids(title_id)
+                       if r not in candidates]
+        first_owner = None
+        for index, candidate in enumerate(candidates):
+            rom_id = self._save_rom_id(candidate)
+            owner = self._save_owner(rom_id)
+            if owner == variant.key or (owner is None and variant is EDEN):
+                return rom_id, owner
+            if index == 0:
+                first_owner = owner
+        return None, first_owner
+
+    def _library_routes_to(self, variant):
+        """True when any library game routes to ``variant``'s emulator."""
+        try:
+            for g in (self.get_games() or []):
+                match = standalone_emulator_for_platform(None, _platform_of(g))
+                if match and match[0] == variant.key:
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _title_id_rom_ids(self, title_id):
+        """Every library ROM the title-ID index saw carrying ``title_id``,
+        not only the one _rom_id_for_title_id answers with."""
+        try:
+            candidates = getattr(self, '_title_id_candidates', None) or {}
+            return list(candidates.get(self._title_id_key(title_id), ()))
+        except Exception:
+            return []
+
+    def _note_title_rom(self, key, rom_id):
+        """Remember that ``rom_id`` carries title ``key`` (see _title_id_rom_ids)."""
+        if not key or not rom_id:
+            return
+        found = self._title_id_candidates.setdefault(key, [])
+        if rom_id not in found:
+            found.append(rom_id)
+
+    def _eden_family_inventory_entries(self, variant):
+        """_eden_inventory_entries for one Eden-family emulator."""
         entries = []
+        if variant is not EDEN and not self._library_routes_to(variant):
+            # Only a save whose ROM routes here is uploaded, so with no such
+            # ROM in the library there is nothing to find: leave its tree be.
+            return entries
         # Eden flushes a Switch save when the game exits, not continuously, so
         # anything on disk mid-session is a partial picture of a save the
         # emulator still holds in memory. Packing it would upload a stale
@@ -15915,20 +16008,23 @@ class AutoSyncManager:
         # start_retroarch_monitoring triggers a session sync on Eden's exit, so
         # the deferral costs seconds, not a cycle. Restore already refuses on
         # the same condition (unpack_save), so both directions now agree that a
-        # live Eden owns its save tree.
-        if emulator_saves.eden_is_running():
-            logging.debug("Eden is running; deferring its saves to the sync "
-                          "triggered when it closes")
+        # live Eden owns its save tree. Lichii closes into its own sync the
+        # same way.
+        if variant is EDEN:
+            running = emulator_saves.eden_is_running()
+        else:
+            running = emulator_saves.lichii_is_running()
+        if running:
+            logging.debug(f"{variant.name} is running; deferring its saves to "
+                          "the sync triggered when it closes")
             return entries
 
         # [Emulators] is optional, and ConfigParser's fallback= does not cover a
-        # missing SECTION — it still raises. Read it on its own so that a config
-        # without the section leaves the override empty instead of being caught
-        # below as "discovery failed" and disabling Eden sync outright.
-        try:
-            override = (self.settings.get('Emulators', 'eden_data_dir', '') or '').strip()
-        except Exception:
-            override = ''
+        # missing SECTION — it still raises. data_dir_setting reads it on its
+        # own so that a config without the section leaves the override empty
+        # instead of being caught below as "discovery failed" and disabling
+        # sync outright.
+        override = emulator_saves.data_dir_setting(self.settings, variant)
 
         # Timed separately from the pack loop below. The session sync a player
         # sits through on close is ~2.8s, and the phase timers narrowed almost
@@ -15937,9 +16033,14 @@ class AutoSyncManager:
         # what is worth caching, so measure them apart rather than together.
         _t0 = time.monotonic()
         try:
-            saves = emulator_saves.find_eden_saves(extra_data_dir=override or None)
+            if variant is EDEN:
+                # Today's exact call: tests stub it with a keyword-only lambda.
+                saves = emulator_saves.find_eden_saves(extra_data_dir=override or None)
+            else:
+                saves = emulator_saves.find_eden_saves(
+                    extra_data_dir=override or None, variant=variant)
         except Exception as e:
-            logging.debug(f"Eden save discovery failed: {e}")
+            logging.debug(f"{variant.name} save discovery failed: {e}")
             return entries
         _t1 = time.monotonic()
 
@@ -15947,26 +16048,47 @@ class AutoSyncManager:
             return entries
 
         pack_dir = cache_dir() / 'packed_saves'
-        awaiting = self._eden_awaiting_restore()
+        if variant is not EDEN:
+            # Its own folder: the same title can have a save in both trees,
+            # and the two packs must not overwrite each other before upload.
+            pack_dir = pack_dir / variant.key
+        # Each emulator's own list: a restore owed to Eden says nothing about
+        # the same title's save in Lichii, nor the reverse.
+        if variant is EDEN:
+            awaiting = self._eden_awaiting_restore()
+        else:
+            awaiting = self._eden_awaiting_restore(variant)
+        left_out = []
         for save in saves:
             title_id = save['title_id']
-            if title_id in awaiting and self._eden_restore_still_owed(
-                    title_id, awaiting[title_id]):
-                continue
-            rom_id = self._save_rom_id(self._rom_id_for_title_id(title_id))
+            if title_id in awaiting:
+                owed = (self._eden_restore_still_owed(title_id, awaiting[title_id])
+                        if variant is EDEN else self._eden_restore_still_owed(
+                            title_id, awaiting[title_id], variant=variant))
+                if owed:
+                    continue
+            rom_id, owner = self._rom_for_save_title(title_id, variant)
             if not rom_id:
-                # No local ROM carries this title ID. Without Sigil the ID is
-                # only legible in a ROM's filename, so an unmatched save is the
-                # expected outcome for a library named without title tags —
-                # skip it rather than attach it to a guess.
-                logging.debug(f"Eden save {title_id} matches no known ROM; skipping")
+                if owner:
+                    # Another emulator's game (a Switch 1 save made in
+                    # Lichii): see _rom_for_save_title.
+                    left_out.append(f"{title_id} (owned by "
+                                    f"{STANDALONE_EMULATORS[owner]['name']})")
+                elif variant is EDEN:
+                    # No local ROM carries this title ID. Without Sigil the ID
+                    # is only legible in a ROM's filename, so an unmatched save
+                    # is the expected outcome for a library named without title
+                    # tags — skip it rather than attach it to a guess.
+                    logging.debug(f"Eden save {title_id} matches no known ROM; skipping")
+                else:
+                    left_out.append(f"{title_id} (no matching ROM)")
                 continue
             try:
                 packed = emulator_saves.pack_save(
                     save['path'], pack_dir / f'{title_id}.zip')
                 stat = packed.stat()
             except Exception as e:
-                self.log(f"⚠️ Could not pack the Eden save for {title_id}: {e}")
+                self.log(f"⚠️ Could not pack the {variant.name} save for {title_id}: {e}")
                 continue
 
             updated_at = datetime.datetime.fromtimestamp(
@@ -15975,7 +16097,9 @@ class AutoSyncManager:
                 'rom_id': rom_id,
                 'file_name': packed.name,
                 'slot': 'autosave',
-                'emulator': 'Eden',
+                # 'Eden' or 'Lichii': written from the owner, never read to
+                # place a save (see _rom_for_save_title).
+                'emulator': variant.name,
                 # The name Argosy reads as the game's autosave; the title ID
                 # travels inside the pack ("<title id>/…"), which is where a
                 # restore reads it from when the name does not carry it.
@@ -15987,8 +16111,11 @@ class AutoSyncManager:
                 '_autocleanup': True,
                 '_autocleanup_limit': 10,
             })
-        logging.debug("[AUTO-SYNC] ⏱️ eden inventory: discovery %.2fs, "
-                      "pack+hash %.2fs (%d saves, %d matched)",
+        if left_out:
+            # One line per sync, not one per title per sync.
+            logging.info(f"{variant.name} saves not synced: {', '.join(left_out)}")
+        logging.debug("[AUTO-SYNC] ⏱️ %s inventory: discovery %.2fs, "
+                      "pack+hash %.2fs (%d saves, %d matched)", variant.key,
                       _t1 - _t0, time.monotonic() - _t1, len(saves), len(entries))
         return entries
 
@@ -17672,15 +17799,21 @@ class AutoSyncManager:
     # booted here. RomM cannot protect these: with no sync history it compares
     # timestamps, so the save written on first boot looks newer and would upload
     # over the player's progress. Kept on disk so a restart does not forget.
-    def _eden_awaiting_restore(self):
+    # One file per Eden-family emulator ("eden_awaiting_restore.json",
+    # "lichii_awaiting_restore.json"): the same title can be owed to both.
+    @staticmethod
+    def _awaiting_restore_path(variant=EDEN):
+        return cache_dir() / f'{variant.key}_awaiting_restore.json'
+
+    def _eden_awaiting_restore(self, variant=EDEN):
         try:
-            data = json.loads((cache_dir() / 'eden_awaiting_restore.json').read_text())
+            data = json.loads(self._awaiting_restore_path(variant).read_text())
             return data if isinstance(data, dict) else {}
         except (OSError, ValueError):
             return {}
 
-    def _set_eden_awaiting_restore(self, title_id, op=None):
-        awaiting = self._eden_awaiting_restore()
+    def _set_eden_awaiting_restore(self, title_id, op=None, variant=EDEN):
+        awaiting = self._eden_awaiting_restore(variant)
         title_id = title_id.upper()
         if op is None:
             if title_id not in awaiting:
@@ -17688,13 +17821,13 @@ class AutoSyncManager:
             del awaiting[title_id]
         else:
             awaiting[title_id] = {'rom_id': op.get('rom_id'), 'save_id': op.get('save_id')}
-        path = cache_dir() / 'eden_awaiting_restore.json'
+        path = self._awaiting_restore_path(variant)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix('.tmp')
         tmp.write_text(json.dumps(awaiting))
         os.replace(tmp, path)
 
-    def _eden_restore_still_owed(self, title_id, entry):
+    def _eden_restore_still_owed(self, title_id, entry, variant=EDEN):
         """False once the server no longer has a save to restore for this title.
 
         Otherwise deleting that save in RomM would stop this game syncing for
@@ -17704,11 +17837,14 @@ class AutoSyncManager:
             url = urljoin(self.romm_client.base_url, f"/api/roms/{entry.get('rom_id')}")
             r = self.romm_client.session.get(url, timeout=15)
             if r.status_code == 200 and not (r.json().get('user_saves') or []):
-                self._set_eden_awaiting_restore(title_id)
+                if variant is EDEN:
+                    self._set_eden_awaiting_restore(title_id)
+                else:
+                    self._set_eden_awaiting_restore(title_id, variant=variant)
                 return False
         except Exception as e:
             logging.debug(f"could not check the awaited save for {title_id}: {e}")
-        logging.info(f"Eden save {title_id}: not uploading a first-boot save "
+        logging.info(f"{variant.name} save {title_id}: not uploading a first-boot save "
                      f"over the server's; restoring the server's first")
         return True
 
@@ -17761,24 +17897,65 @@ class AutoSyncManager:
             # Still nothing: the pack itself says, once downloaded -- both
             # Ludo and Argosy nest a save under its title-ID folder.
 
+        return self._restore_eden_family_save(op, device_id, session_id, file_name,
+                                              title_id, self._restore_variant(op))
+
+    def _restore_variant(self, op):
+        """The Eden-family emulator a Switch-family server save restores into.
+
+        The emulator its ROM routes to (switch -> Eden, switch-2 -> Lichii),
+        never the save's Emulator label: a foreign or buggy upload can carry
+        any label, so an 'Eden' save on a switch-2 ROM still goes to Lichii,
+        and a switch ROM's save never does. See _rom_for_save_title, which
+        decides the same owner on the upload side. A ROM the library does not
+        list restores into Eden, as before Lichii existed.
+        """
+        return variant_for_key(self._save_owner(op.get('rom_id'))) or EDEN
+
+    def _restore_eden_family_save(self, op, device_id, session_id, file_name,
+                                  title_id, variant=EDEN):
+        """_restore_standalone_save for an Eden or Lichii pack.
+
+        Eden's calls below keep exactly their old arguments: tests stub the
+        emulator_saves helpers with narrow lambdas.
+        """
+        eden = variant is EDEN
+
+        def set_awaiting(title, owed=None):
+            if eden:
+                self._set_eden_awaiting_restore(title, owed)
+            else:
+                self._set_eden_awaiting_restore(title, owed, variant=variant)
+
         # Check before spending the transfer. unpack_save checks again and is
         # the authoritative one -- Eden can start while the download runs --
         # but without this a restore attempted with Eden open pays for the
         # whole save every sync just to be refused at the end.
-        if emulator_saves.eden_is_running():
-            self.log(f"ℹ️ Save-sync: Eden is running; {title_id or file_name} will "
-                     f"restore once it is closed.")
+        if (emulator_saves.eden_is_running() if eden
+                else emulator_saves.lichii_is_running() if variant is LICHII
+                else emulator_saves.eden_is_running(variant)):
+            self.log(f"ℹ️ Save-sync: {variant.name} is running; {title_id or file_name} "
+                     f"will restore once it is closed.")
             return False
 
-        try:
-            override = (self.settings.get('Emulators', 'eden_data_dir', '') or '').strip()
-        except Exception:
-            override = ''
-        if title_id and emulator_saves.eden_restore_dir(title_id, override or None) is None:
-            self._set_eden_awaiting_restore(title_id, op)
-            self.log(f"ℹ️ Save-sync: {title_id} hasn't booted here yet; its server "
-                     f"save will restore after the first boot.")
-            return False
+        if eden:
+            try:
+                override = (self.settings.get('Emulators', 'eden_data_dir', '') or '').strip()
+            except Exception:
+                override = ''
+        else:
+            override = emulator_saves.data_dir_setting(self.settings, variant) or ''
+        if title_id:
+            if eden:
+                target = emulator_saves.eden_restore_dir(title_id, override or None)
+            else:
+                target = emulator_saves.eden_restore_dir(
+                    title_id, override or None, variant=variant)
+            if target is None:
+                set_awaiting(title_id, op)
+                self.log(f"ℹ️ Save-sync: {title_id} hasn't booted here yet; its server "
+                         f"save will restore after the first boot.")
+                return False
 
         # No device_id: downloading with one makes RomM record this device as
         # synced to the save, which is only true after the unpack below works.
@@ -17796,7 +17973,7 @@ class AutoSyncManager:
         import zipfile
         if not zipfile.is_zipfile(staged):
             self.log(f"⚠️ Save-sync: server save {file_name!r} for {title_id} is a "
-                     f"bare .srm, not an Eden save pack — likely a stray upload from "
+                     f"bare .srm, not an {variant.name} save pack — likely a stray upload from "
                      f"a mislabelled sync. Delete it in RomM so the real save can "
                      f"become the slot's latest.")
             staged.unlink(missing_ok=True)
@@ -17811,9 +17988,17 @@ class AutoSyncManager:
 
         pack_hash = RomMClient.compute_content_hash(staged)
         try:
-            result = emulator_saves.unpack_save(
-                staged, title_id, extra_data_dir=override or None,
-                backup_dir=cache_dir() / 'save_backups')
+            if eden:
+                result = emulator_saves.unpack_save(
+                    staged, title_id, extra_data_dir=override or None,
+                    backup_dir=cache_dir() / 'save_backups')
+            else:
+                # Backups in their own folder, as packs are: the same title
+                # can be restored into both emulators.
+                result = emulator_saves.unpack_save(
+                    staged, title_id, extra_data_dir=override or None,
+                    backup_dir=cache_dir() / 'save_backups' / variant.key,
+                    variant=variant)
         except RuntimeError as e:
             # Eden is open. Not a failure -- retrying after it closes is the
             # right outcome, and overwriting a save the emulator has in memory
@@ -17822,7 +18007,7 @@ class AutoSyncManager:
                      f"and will restore next sync.")
             return False
         except FileNotFoundError as e:
-            self._set_eden_awaiting_restore(title_id, op)
+            set_awaiting(title_id, op)
             self.log(f"ℹ️ Save-sync: {e}")
             return False
         except Exception as e:
@@ -17831,7 +18016,7 @@ class AutoSyncManager:
         finally:
             staged.unlink(missing_ok=True)
 
-        self._set_eden_awaiting_restore(title_id)
+        set_awaiting(title_id)
         if device_id:
             self.romm_client.confirm_save_downloaded(
                 op.get('save_id'), 'saves', device_id, content_hash=pack_hash)
@@ -18037,13 +18222,13 @@ class AutoSyncManager:
                         
                         if sibling_fs_name_no_ext and (sibling_fs_name_no_ext == save_basename or sibling_fs_name_no_ext == clean_basename):
                             # Return the variant's ROM ID, not the parent's —
-                            # except on Switch, where _sibling_files are add-on
-                            # content (update/DLC) grouped under the base game's
+                            # except on Switch and Switch 2, where _sibling_files
+                            # are add-on content (update/DLC) grouped under the base game's
                             # tile, not self-owned region ROMs. The save belongs
                             # to the main entry; attributing it to the sibling
                             # makes the server see "no save under this rom" and
                             # duplicate the upload on the sibling id.
-                            if str(game.get('platform_slug') or '').lower() == 'switch':
+                            if str(game.get('platform_slug') or '').lower() in SWITCH_FAMILY:
                                 return game['rom_id']
                             return sibling.get('id')
 
@@ -18101,10 +18286,10 @@ class AutoSyncManager:
                                 'game': game,
                                 'region': variant_region,
                                 'fs_name_no_ext': sibling_fs_name_no_ext,
-                                # Switch siblings are grouped add-ons, not
+                                # Switch / Switch 2 siblings are grouped add-ons, not
                                 # region ROMs — the main entry owns the save.
                                 'rom_id': (game['rom_id']
-                                           if str(game.get('platform_slug') or '').lower() == 'switch'
+                                           if str(game.get('platform_slug') or '').lower() in SWITCH_FAMILY
                                            else sibling.get('id'))
                             })
 
@@ -18384,12 +18569,12 @@ class AutoSyncManager:
         except Exception:
             return None
 
-    # Grouped tiles (an unpacked folder and a .wua of the same game, or two
-    # dumps of one Switch title) are one game with one save, and the save
+    # Grouped tiles (an unpacked folder and a .wua of the same game, or the
+    # base, update and DLC of one Switch or Switch 2 title) are one game with one save, and the save
     # folder is the title's either way. Argosy files a save under the ROM it
     # played and only reads saves on that ROM, so Ludo does the same when
     # writing and, when reading, takes the newest save on any ROM of the tile.
-    TILE_SAVE_PLATFORMS = ('wiiu', 'switch')
+    TILE_SAVE_PLATFORMS = ('wiiu',) + SWITCH_FAMILY
 
     @staticmethod
     def _tile_rom_ids(game):
@@ -18666,6 +18851,9 @@ class AutoSyncManager:
         """
         if self._title_id_index is None:
             self._title_id_index = {}
+            # Every ROM seen per title, for _title_id_rom_ids: the index
+            # itself keeps one.
+            self._title_id_candidates = {}
             # TIER 0: what the SERVER read out of the binary. RomM 5.3.0 does
             # this during its scan and stores `title_id` and `save_target` on
             # the ROM, which covers the platforms whose ID is legible nowhere
@@ -18683,6 +18871,7 @@ class AutoSyncManager:
                         continue
                     for value in (data.get('title_id'), data.get('save_target')):
                         key = self._title_id_key(value)
+                        self._note_title_rom(key, rom_id)
                         # First writer wins, so a base title claimed here is
                         # not overwritten by a sibling's save_target.
                         if key and key not in self._title_id_index:
@@ -18710,6 +18899,7 @@ class AutoSyncManager:
                     base = title_ids.title_id_from_name(name)
                     if not base:
                         continue
+                    self._note_title_rom(base, rom_id)
                     # A game, its update and its DLC all normalise to one base
                     # ID; the base entry owns the save.
                     raw = title_ids.raw_switch_tag_in_name(name)
@@ -18734,18 +18924,34 @@ class AutoSyncManager:
                     # from the filename — the difference between matching a
                     # plainly-named dump and not.
                     prod_keys = emulator_saves.find_prod_keys()
+                    every = {}
                     for tid, path in title_ids.index_roms(
-                            [rom_dir], prod_keys=prod_keys).items():
+                            [rom_dir], prod_keys=prod_keys, every=every).items():
                         # Reuse the name-based tiers to turn the ROM file into a
                         # rom_id. The suffix is irrelevant to them; only the stem
                         # is compared.
                         key = self._title_id_key(tid)
-                        if not key or key in self._title_id_index:
+                        # Candidates matter only to the Eden family's save
+                        # owner (_rom_for_save_title); every other title keeps
+                        # the one lookup it had.
+                        switch = bool(title_ids.base_switch_title_id(tid))
+                        if not key or (not switch and key in self._title_id_index):
                             continue
                         rom_id = self.find_rom_id_for_save_file(
                             path.with_suffix('.srm'))
-                        if rom_id:
+                        self._note_title_rom(key, rom_id)
+                        if rom_id and key not in self._title_id_index:
                             self._title_id_index[key] = rom_id
+                        # Every local ROM carrying the title is a candidate,
+                        # even when a tier above or a better-ranked file here
+                        # already claimed it: a plainly named Switch 2 Edition
+                        # is identified only by its container, and without
+                        # this its Lichii save matches no ROM routed to Lichii.
+                        for other in (every.get(tid, ()) if switch else ()):
+                            if other != path:
+                                self._note_title_rom(
+                                    key, self.find_rom_id_for_save_file(
+                                        other.with_suffix('.srm')))
                     logging.debug(
                         f"title-ID index: {len(self._title_id_index)} ROMs identified")
             except Exception as e:

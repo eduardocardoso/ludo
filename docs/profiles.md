@@ -61,6 +61,22 @@ writes the user list Eden would make itself (one user named "Eden", which
 stays the first profile's). Eden allows eight users; once they are all taken,
 Ludo leaves Switch saves alone for any new profile.
 
+Lichii, which runs Switch 2 games, works the same way with its own users:
+each profile gets a Lichii user of its own, separate from its Eden user, and
+Lichii starts with `-u` for it. The first profile keeps the user selected in
+Lichii's own settings. Ludo only changes Lichii's user list while Lichii is
+closed.
+
+If Eden's or Lichii's user list already has a user named exactly like a
+profile (its name or its username, same capitals and spaces), that profile
+plays as that user the first time instead of getting a new one, so users made
+by hand keep their saves. A user another profile already plays as is not
+reused, and a profile that already has its user never switches to another.
+
+Before starting Eden or Lichii as a profile's user, Ludo turns off the
+emulator's "select user on boot" option, so its user picker can't override
+that user. If the emulator is already running, Ludo leaves the option alone.
+
 Wii U saves work the same way through Cemu's accounts. The first profile
 keeps the account Cemu has active; every other profile gets a Cemu account
 of its own (named after the profile), added while Cemu is closed. When Cemu

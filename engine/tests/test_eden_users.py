@@ -117,6 +117,20 @@ class EdenUsersTest(unittest.TestCase):
         self.use(mia)
         self.assertEqual(RetroArchInterface._eden_user_args('/usr/bin/eden'), ['-u', '2'])
 
+    def test_launch_turns_off_the_boot_user_picker(self):
+        from romm_sync_engine.sync_core import RetroArchInterface
+        config = self.home / '.config/eden/qt-config.ini'
+        config.parent.mkdir(parents=True)
+        on = '[UI]\nselect_user_on_boot\\default=false\nselect_user_on_boot=true\n'
+        config.write_text(on)
+        # One profile: no -u, so the picker is the user's business.
+        self.assertEqual(RetroArchInterface._eden_user_args('/usr/bin/eden'), [])
+        self.assertEqual(config.read_text(), on)
+        P.create('Mia')
+        with patch.object(eden_config, 'eden_is_running', return_value=False):
+            self.assertEqual(RetroArchInterface._eden_user_args('/usr/bin/eden'), ['-u', '0'])
+        self.assertIn('select_user_on_boot=false', config.read_text().splitlines())
+
     def test_a_running_eden_or_a_missing_user_file_leaves_saves_alone(self):
         mia = P.create('Mia')
         self.use(mia)

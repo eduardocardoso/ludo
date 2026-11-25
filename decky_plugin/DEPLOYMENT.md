@@ -171,11 +171,8 @@ Decky Loader's installer validates all of these. **Any missing file causes silen
 | `dist/index.js.map` | YES | Source map |
 | `py_modules/romm_sync_engine/` | YES | Sync engine package: `sync_core.py`, `bios_manager.py`, title/emulator/save helpers (dev symlink — must be real files in zip) |
 | `py_modules/requests/` | YES | Bundled dependency (not on SteamOS) |
-| `py_modules/watchdog/` | YES | Bundled dependency (not on SteamOS) |
-| `py_modules/PIL/` | YES | Bundled dependency (Pillow for image processing) |
-| `py_modules/pillow.libs/` | YES | Bundled shared libs for Pillow C extensions |
 | `py_modules/qrcode/` | YES | Bundled dependency (QR encoding for device pairing) |
-| `py_modules/psutil/` | YES | Bundled dependency (imported by `romm_sync_engine/sync_core.py`) |
+| `py_modules/_native/{x86_64,aarch64}/` | YES | Every dependency that ships per-platform wheels, once per architecture: Pillow (`PIL/`, `pillow.libs/`), psutil (imported by `romm_sync_engine/sync_core.py`), cryptography, cffi, charset_normalizer, and watchdog when it comes as a platform wheel. `main.py` puts the directory matching Decky's own Python on `sys.path`. Without the right one, the engine fails to import. |
 | `py_modules/urllib3/`, `certifi/`, `charset_normalizer/`, `idna/` | YES | Transitive deps of requests |
 | `assets/logo.png` | NO | Plugin icon shown in Decky's plugin list (the copy the backend serves is `py_modules/ludo_app/assets/logo.png`) |
 | `py_modules/ludo_app/assets/` | YES | All served artwork, vendored automatically by `cp -rL`: the plugin logo, the RomM brand mark `romm-isotipo.svg` (served pre-connection by `get_romm_logo` because RomM server assets need auth), and the RomM Steam tiles `romm-{grid,hero,logo,header,icon}.png` (served by `get_romm_artwork` for the optional 'RomM' launcher tile, painted via `SetCustomArtworkForApp`; regenerate with `scripts/gen_romm_artwork.py` — needs cairosvg, dev-only). |
@@ -268,12 +265,10 @@ Then install from `~/Ludo-v1.0.0-decky.zip` on the Deck via Decky Loader.
 - Missing `py_modules/requests/` (and other bundled libs) causes `No module named 'requests'`
   on a fresh Decky install — always copy the entire `py_modules/` directory, not just
   `sync_core.py`
-- **Decky Loader's Python is 3.11** (AppImage bundles its own interpreter at `/tmp/_MEI*/`). Pillow and any other bundled wheels with C extensions **must be compiled for Python 3.11**, not the SteamOS system Python (3.13). To refresh `py_modules/PIL/` and `py_modules/pillow.libs/`:
-  ```bash
-  pip download Pillow --python-version 3.11 --platform manylinux_2_28_x86_64 --only-binary :all: -d /tmp/pillow-311/
-  cd /tmp/pillow-311 && unzip -q pillow-*.whl -d extracted/
-  rm -rf decky_plugin/py_modules/PIL decky_plugin/py_modules/pillow.libs decky_plugin/py_modules/pillow-*.dist-info
-  cp -r extracted/PIL decky_plugin/py_modules/PIL
-  cp -r extracted/pillow.libs decky_plugin/py_modules/pillow.libs
-  cp -r extracted/pillow-*.dist-info decky_plugin/py_modules/
-  ```
+- **Decky Loader runs its own Python** (3.11 up to v3.2, 3.14 from v3.3; the PyInstaller
+  binary unpacks it to `/tmp/_MEI*/`), and it is built for x86_64 on the Steam Deck and for
+  aarch64 on ARM handhelds. Bundled wheels with C extensions **must match that interpreter's
+  version and architecture**, not the system Python's. `decky-build.sh` downloads every
+  version/arch pair and fails if any is missing, so refresh them by re-running it rather than
+  copying wheels in by hand. To see which Decky a device runs:
+  `file ~/homebrew/services/PluginLoader`.

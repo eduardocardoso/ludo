@@ -12,7 +12,7 @@ import { V2Focus, V2_FOCUS_STYLE} from "./focus";
 import { CoverPip, GameCover, ScreenshotArt, awaitCover, peekCover, qGetImageBg } from "./media";
 import { cancelDetailPrefetch, scheduleDetailPrefetch } from "./detailcache";
 import { PlatformIcon, ProgressRing, UserMenuRow, MODAL_SCRIM_INSET, PickerModal, ToastCover} from "./kit";
-import { FaBan, FaBookmark, FaBoxOpen, FaCheck, FaChevronLeft, FaChevronRight, FaClone, FaCloudUploadAlt, FaDownload, FaEllipsisH, FaGlobe, FaInfoCircle, FaPlay, FaSync, FaTrash, FaUnlink, FaGamepad, FaMicrochip, FaStopwatch} from "react-icons/fa";
+import { FaBan, FaBookmark, FaBoxOpen, FaCheck, FaCheckCircle, FaChevronLeft, FaChevronRight, FaClone, FaCloudUploadAlt, FaDownload, FaEllipsisH, FaGlobe, FaInfoCircle, FaPlay, FaSync, FaTrash, FaUnlink, FaGamepad, FaMicrochip, FaStopwatch} from "react-icons/fa";
 import { _broadcastLibRefresh } from "./events";
 import { MdFlashOn } from "react-icons/md";
 import { _forceGamepadFocus } from "./shell";
@@ -230,7 +230,55 @@ function regionToEmoji(region: string): string {
   return REGION_EMOJI[(region || '').toLowerCase()] || region;
 }
 
-function openRegionPicker(
+// Short region codes ("U", "E", "eur") spelled out from the full names that
+// share their flag in REGION_EMOJI: "u" -> "USA".
+function regionName(code: string): string | null {
+  const k = code.trim().toLowerCase();
+  const flag = REGION_EMOJI[k];
+  if (!flag) return null;
+  // A code's name is the longest key with its flag and first letter: "usa"
+  // for "u", "world" for "w" (not "unlicensed", which shares the globe).
+  const name = k.length > 2 ? k : Object.keys(REGION_EMOJI)
+    .filter((n) => REGION_EMOJI[n] === flag && n[0] === k[0])
+    .reduce((a, b) => (b.length > a.length ? b : a), k);
+  return name === 'usa' || name.length <= 3 ? name.toUpperCase()
+    : name.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// The parenthesised tags of a ROM file name, region first and spelled out:
+// "Toy Story 2 (Europe) (En,Fr,De)" -> "Europe · En,Fr,De", GoodTools'
+// "(U) (V1.1) [S] [!]" -> "USA · V1.1". Square-bracket dump flags are left
+// out: they mark the dump, not the version. Empty when the name has no tags.
+export function versionTags(file?: string): string {
+  const groups = [...(file || '').matchAll(/\(([^)]+)\)/g)].map((m) => m[1].trim()).filter(Boolean);
+  const asRegion = (g: string) => {
+    const names = g.split(',').map(regionName);
+    return names.every(Boolean) ? names.join(', ') : null;
+  };
+  const region = groups.findIndex((g) => asRegion(g) !== null);
+  if (region < 0) return groups.join(' · ');
+  return [asRegion(groups[region]), ...groups.filter((_, i) => i !== region)].join(' · ');
+}
+
+// versionTags split for display: the region's flags and name, the language
+// flags of a group like "(En,Fr,De)", and whatever else ("Rev 1", "Disc 1").
+export function versionParts(file?: string): { flags: string[]; region: string; langs: string[]; rest: string[] } {
+  const groups = [...(file || '').matchAll(/\(([^)]+)\)/g)].map((m) => m[1].trim()).filter(Boolean);
+  const out = { flags: [] as string[], region: '', langs: [] as string[], rest: [] as string[] };
+  for (const g of groups) {
+    const items = g.split(',').map((x) => x.trim()).filter(Boolean);
+    const names = items.map(regionName);
+    if (!out.region && names.every(Boolean)) {
+      out.region = names.join(', ');
+      out.flags = items.map(regionToEmoji);
+    } else if (!out.langs.length && items.every((x) => x.length === 2 && x.toLowerCase() in LANGUAGE_EMOJI)) {
+      out.langs = items.map(languageToEmoji);
+    } else out.rest.push(g);
+  }
+  return out;
+}
+
+export function openRegionPicker(
   romId: number, gameName: string,
   siblings: { rom_id: number; name: string; fs_name_no_ext?: string; fs_extension?: string }[],
   downloadedIds: Set<number>,
@@ -262,13 +310,60 @@ function openRegionPicker(
   const bases = all.map(base);
   const baseClash = (e: typeof all[number]) => !!e.ext && bases.indexOf(base(e)) !== bases.lastIndexOf(base(e));
 
+  // What tells versions apart is the tags in their file names: "(Italy)",
+  // "(Europe) (En,Fr,De)", "(Rev 1)", shown as flags and a region name. When
+  // two versions carry the same tags (one game as .bin and as .chd), the
+  // format follows; the title is the fallback for files with no tags at all.
+  const tagsOf = (e: typeof all[number]) => versionTags(e.file);
+  const tags = all.map(tagsOf);
+  const tagClash = (t: string) => tags.indexOf(t) !== tags.lastIndexOf(t);
+  // What the file name adds after its tags ("_wua" in "Terraria (Europe)_wua"),
+  // else its format: the tell between two versions whose tags are the same.
+  const tellOf = (e: typeof all[number]) => {
+    const after = (e.file || '').replace(/^.*\)/, '').replace(/^[\s_.-]+/, '').trim();
+    return (e.file || '').includes(')') && after ? after : e.ext ? `.${e.ext}` : '';
+  };
+  const tagExt = (e: typeof all[number]) => tagsOf(e) + '|' + tellOf(e);
+  const tagExts = all.map(tagExt);
+  const flagStyle = { fontFamily: EMOJI_FONT, letterSpacing: '2px' };
+  const nameOf = (e: typeof all[number]): any => {
+    const t = tagsOf(e);
+    const plain = base(e) + (baseClash(e) ? ` (.${e.ext})` : '');
+    if (!t || tagExts.indexOf(tagExt(e)) !== tagExts.lastIndexOf(tagExt(e))) return plain;
+    const p = versionParts(e.file);
+    const text = [p.region, ...p.rest].filter(Boolean).join(' · ')
+      + (tagClash(t) && tellOf(e) ? ` · ${tellOf(e)}` : '');
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', flexWrap: 'wrap' }}>
+        {p.flags.length > 0 && <span style={flagStyle}>{p.flags.join('')}</span>}
+        <span>{text}</span>
+        {p.langs.length > 0 && <span style={{ ...flagStyle, fontSize: '12px', opacity: 0.85 }}>{p.langs.join('')}</span>}
+      </span>
+    );
+  };
+  const statusOf = (id: number) => (noFile(id) ? 'no file' : !onDisk(id) ? 'not downloaded' : '');
+
+  const onDisk = (id: number) => (id === romId ? !!mainDownloaded : downloadedIds.has(id));
+
   showModal(
     <PickerModal title="Select region" items={all.map((entry) => ({
       key: entry.rom_id,
-      label: base(entry) + (baseClash(entry) ? ` (.${entry.ext})` : '')
-        + (noFile(entry.rom_id) ? ' (no file)'
-          : !(entry.rom_id === romId ? mainDownloaded : downloadedIds.has(entry.rom_id)) ? ' (not downloaded)' : ''),
-      active: entry.rom_id === lastUsedId && !noFile(entry.rom_id),
+      label: <>
+        {nameOf(entry)}
+        {statusOf(entry.rom_id) && <span style={{ color: V2.fgMuted, marginLeft: '6px', whiteSpace: 'nowrap' }}>({statusOf(entry.rom_id)})</span>}
+      </>,
+      // On disk, to download, or not downloadable: the icon says it before the
+      // text does. The version last played says so after its name.
+      icon: noFile(entry.rom_id) ? <FaBan size={13} style={{ color: V2.fgFaint }} />
+        : onDisk(entry.rom_id) ? <FaCheckCircle size={14} style={{ color: V2.success }} />
+        : <FaDownload size={13} style={{ color: V2.fgMuted }} />,
+      // Only a version on disk can have been the last one played: the tile's
+      // default before any launch is the game itself, wherever its file is.
+      trailing: entry.rom_id === lastUsedId && onDisk(entry.rom_id) && !noFile(entry.rom_id)
+        ? <span style={{ marginLeft: 'auto', paddingLeft: '12px', fontSize: '11px', fontWeight: 600, color: V2.brand, whiteSpace: 'nowrap' }}>Last played</span>
+        : undefined,
+      // A on a row downloads that version or starts it: say which.
+      okHint: noFile(entry.rom_id) ? undefined : onDisk(entry.rom_id) ? 'Play' : 'Download',
       onSelect: () => onSelected?.(entry.rom_id),
     }))} />
   );
@@ -404,7 +499,10 @@ export const GameTile = memo(function GameTile({ game, onOpen, onActiveCover, fo
   const showRegionPicker = async () => {
     const ids = (await ensureSiblings(true)) || downloadedRegionIds;
     openRegionPicker(game.rom_id, game.name, game.sibling_roms || [], ids,
-      activeRegionId, handleRegionSelected, game.file_name, dl, noFileRegionIds.current);
+      activeRegionId, (picked) => handleRegionSelected(picked, ids), game.file_name,
+      // The backend lists which versions are on disk, this one included; `dl`
+      // is true once any version is.
+      ids.has(game.rom_id), noFileRegionIds.current);
   };
   // Hold A to open the disc/region picker; a quick press launches. The OK
   // button's onActivate fires on the PRESS edge on Steam Deck, so we can't let
@@ -529,9 +627,10 @@ export const GameTile = memo(function GameTile({ game, onOpen, onActiveCover, fo
     } catch (e) { toaster.toast({ title: 'Launch failed', body: String(e) }); }
     finally { setBusy(null); }
   };
-  const handleRegionSelected = async (selectedRomId: number) => {
-    const isMainRom = selectedRomId === game.rom_id;
-    const isAlreadyDownloaded = isMainRom ? dl : downloadedRegionIds.has(selectedRomId);
+  const handleRegionSelected = async (selectedRomId: number, onDisk?: Set<number>) => {
+    // `onDisk` is what the picker was opened with: this closure is older than
+    // the state update ensureSiblings made just before.
+    const isAlreadyDownloaded = (onDisk || downloadedRegionIds).has(selectedRomId);
     if (!isAlreadyDownloaded) {
       if (busy) { toaster.toast({ title: 'Busy', body: 'Please wait for the current operation' }); return; }
       if (offline) {
@@ -704,7 +803,7 @@ export const GameTile = memo(function GameTile({ game, onOpen, onActiveCover, fo
       onSecondaryActionDescription="Details"
       onOptionsButton={dl ? requestDelete : undefined}
       onOptionsActionDescription={dl ? (confirmDelete ? 'Confirm delete' : 'Delete') : undefined}
-      onOKActionDescription={dl ? (isMultiRegion ? 'Launch (hold: regions)' : isMultiDisc ? (discsAreRegion ? 'Launch (hold: regions)' : 'Launch (hold: discs)') : (resume ? 'Resume' : 'Launch')) : game.no_server_file ? 'No file' : 'Download'}
+      onOKActionDescription={dl ? (isMultiRegion ? 'Launch (hold: Regions)' : isMultiDisc ? (discsAreRegion ? 'Launch (hold: Regions)' : 'Launch (hold: Discs)') : (resume ? 'Resume' : 'Launch')) : game.no_server_file ? 'No file' : isMultiRegion ? 'Download (hold: Regions)' : 'Download'}
       onFocus={() => { setFocused(true); activate(); ensureDiscs(); ensureSiblings(); scheduleDetailPrefetch(game.rom_id); if (index !== undefined) onFocusIdx?.(index); _tileFocusScrub(selfRef.current, game.name); }}
       onBlur={() => { setFocused(false); cancelDetailPrefetch(); }}
       onMouseEnter={() => { setFocused(true); activate(); ensureDiscs(); ensureSiblings(); }}

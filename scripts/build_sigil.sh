@@ -23,7 +23,7 @@ set -euo pipefail
 # string upstream reports has read "0.1.0-dev" for every build so far, so this
 # is the only record of which code is bundled.
 SIGIL_REPO="${SIGIL_REPO:-https://github.com/rommapp/argosy-sigil}"
-SIGIL_COMMIT="${SIGIL_COMMIT:-8a3b008}"
+SIGIL_COMMIT="${SIGIL_COMMIT:-4d94424}"
 
 # Resolved before any cd: "$0" may be relative.
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -64,11 +64,21 @@ cp "$LIB" "$BUILD_DIR/libsigil.so"
 # the Decky zip and the desktop app carry romm_sync_engine wholesale, so a file
 # there reaches users without either build script changing. title_ids finds it
 # with no env var set. See engine/romm_sync_engine/bin/README.md.
+#
+# x86-64 keeps the original bin/libsigil.so; every other arch gets its own
+# subdirectory (bin/aarch64/libsigil.so), which title_ids tries first on that
+# arch. Run this once per arch, on that arch, and commit each result.
 BUNDLE_DIR="$REPO_ROOT/engine/romm_sync_engine/bin"
 if [ -d "$BUNDLE_DIR" ]; then
+  ARCH="$(uname -m)"
+  [ "$ARCH" = x86_64 ] || BUNDLE_DIR="$BUNDLE_DIR/$ARCH"
+  mkdir -p "$BUNDLE_DIR"
   cp "$BUILD_DIR/libsigil.so" "$BUNDLE_DIR/libsigil.so"
   echo "==> installed into $BUNDLE_DIR/libsigil.so"
 fi
+# The header the bundled build came from, so test_sigil_saves can check the
+# ctypes mirrors in sigil_saves.py against it.
+cp "$SRC_DIR/include/sigil.h" "$REPO_ROOT/engine/tests/sigil.h"
 
 echo
 echo "built: $BUILD_DIR/libsigil.so ($(git rev-parse --short HEAD))"

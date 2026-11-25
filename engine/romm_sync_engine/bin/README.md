@@ -37,3 +37,18 @@ was the *only* behaviour before this was bundled, and it is why a plainly named
   read far fewer formats.
 
 To refresh: run `scripts/build_sigil.sh` and commit the result.
+
+## Other architectures
+
+`libsigil.so` here is the x86-64 build. Builds for other architectures live in a
+subdirectory named for `uname -m`, e.g. `aarch64/libsigil.so` for ARM handhelds
+running Decky. `title_ids` tries the matching subdirectory first. Run
+`scripts/build_sigil.sh` on that architecture (it installs into the right place)
+and commit the result. An arch with no build of its own falls back to
+filename-only identification, as described above.
+
+- `aarch64/libsigil.so`: the same upstream commit `8a3b008`, built by
+  `scripts/build_sigil.sh` in a `debian:bookworm` arm64 container. All 29
+  upstream tests pass. Links libc only, highest requirement `GLIBC_2.33`, the
+  same floor as the x86-64 build. Tested on an AYN Odin 3 running Armada OS
+  (glibc 2.43).

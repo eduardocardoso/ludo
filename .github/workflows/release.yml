@@ -1,9 +1,10 @@
 name: Release
 
-# One release carries both artifacts. They are named by the suffixes the
+# One release carries every artifact: the Decky zip and one AppImage per
+# architecture. They are named by the suffixes the
 # in-app updater selects on (each shell's HostProfile.asset_suffix — see
 # decky_plugin/main.py and desktop/backend/server.py — plus artifactName in
-# desktop/package.json), so the names are a contract, not
+# desktop/package.json and tools/dist-appimage.sh), so the names are a contract, not
 # cosmetics — the verify job below enforces that.
 on:
   push:
@@ -19,7 +20,9 @@ permissions:
 
 env:
   DECKY_SUFFIX: '-decky.zip'
-  DESKTOP_SUFFIX: '-x86_64.AppImage'
+  # One AppImage per architecture. Keep these in step with the desktop job's
+  # matrix and the suffix lists in verify-updater below.
+  DESKTOP_SUFFIXES: '-x86_64.AppImage -aarch64.AppImage'
 
 jobs:
   version:
@@ -74,7 +77,15 @@ jobs:
 
   desktop:
     needs: version
-    runs-on: ubuntu-latest
+    # Each AppImage is built on its own arch, not cross-built: prepare-runtime.sh
+    # pip-installs into the bundled interpreter and imports the backend with it,
+    # so that interpreter has to run on the build machine.
+    strategy:
+      matrix:
+        include:
+          - { arch: x86_64,  runner: ubuntu-latest }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
         with: { ref: '${{ inputs.tag || github.ref }}' }
@@ -89,8 +100,8 @@ jobs:
           npm run dist
       - uses: actions/upload-artifact@v7
         with:
-          name: desktop
-          path: desktop/release/Ludo-v*${{ env.DESKTOP_SUFFIX }}
+          name: desktop-${{ matrix.arch }}
+          path: desktop/release/Ludo-v*-${{ matrix.arch }}.AppImage
           if-no-files-found: error
 
   release:
@@ -100,17 +111,17 @@ jobs:
       - uses: actions/download-artifact@v8
         with: { path: dist, merge-multiple: true }
 
-      # Both assets must be present and non-trivial before anything is
+      # Every asset must be present and non-trivial before anything is
       # published: a release missing one silently breaks that frontend's
       # updater, and select_release skips releases lacking the asset, so the
       # failure would look like "no update available" rather than an error.
       - name: Verify assets
         run: |
           V="${{ needs.version.outputs.version }}"
-          DECKY="dist/Ludo-v${V}${{ env.DECKY_SUFFIX }}"
-          DESK="dist/Ludo-v${V}${{ env.DESKTOP_SUFFIX }}"
+          FILES=("dist/Ludo-v${V}${{ env.DECKY_SUFFIX }}")
+          for s in ${{ env.DESKTOP_SUFFIXES }}; do FILES+=("dist/Ludo-v${V}${s}"); done
           ls -lh dist/
-          for f in "$DECKY" "$DESK"; do
+          for f in "${FILES[@]}"; do
             [ -f "$f" ] || { echo "::error::missing asset $f"; exit 1; }
             sz=$(stat -c%s "$f")
             [ "$sz" -gt 1000000 ] || { echo "::error::$f is only $sz bytes"; exit 1; }
@@ -138,7 +149,7 @@ jobs:
         with: { ref: '${{ inputs.tag || github.ref }}' }
       - uses: actions/setup-python@v6
         with: { python-version: '3.11' }
-      - name: Resolve both assets through select_release
+      - name: Resolve every asset through select_release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -159,7 +170,7 @@ jobs:
           print(f'verifying {version} on the {channel} channel')
 
           failures = []
-          for suffix in ('-decky.zip', '-x86_64.AppImage'):
+          for suffix in ('-decky.zip', '-x86_64.AppImage', '-aarch64.AppImage'):
               rel = backend.select_release(channel, suffix)
               if not rel:
                   failures.append(suffix)
@@ -187,7 +198,7 @@ jobs:
 
           version = os.environ['VERSION']
           channel = 'beta' if '-' in version else 'stable'
-          missing = [s for s in ('-decky.zip', '-x86_64.AppImage')
+          missing = [s for s in ('-decky.zip', '-x86_64.AppImage', '-aarch64.AppImage')
                      if not backend.select_release(channel, s)]
           if missing:
               print(f"::warning::anonymous readers (every shipped install) "

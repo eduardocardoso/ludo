@@ -37,7 +37,7 @@ version = os.environ['VERSION']
 channel = 'beta' if '-' in version else 'stable'
 
 failures = []
-for suffix in ('-decky.zip', '-x86_64.AppImage'):
+for suffix in ('-decky.zip', '-x86_64.AppImage', '-aarch64.AppImage'):
     rel = backend.select_release(channel, suffix)
     if not rel:
         failures.append(f'{suffix}: updater resolves no release at all')

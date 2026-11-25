@@ -35,7 +35,19 @@ OUT_ZIP="${SCRIPT_DIR}/../${PLUGIN_NAME}.zip"
 DEPS=(requests watchdog psutil qrcode Pillow cryptography typing_extensions "python-socketio[client]")
 
 PY_VERSIONS=(3.14 3.11)
-echo "==> Vendoring Python deps for Decky's Python ${PY_VERSIONS[*]}: ${DEPS[*]}"
+# Decky Loader ships for x86_64 (Steam Deck) and aarch64 (ARM handhelds running
+# SteamOS derivatives), and one zip serves both. Pure-Python wheels unpack into
+# py_modules/ and are shared; platform wheels unpack into py_modules/_native/<arch>/
+# and main.py puts the one matching the running Decky on sys.path. They cannot
+# share one directory: abi3 extensions (cryptography's _rust.abi3.so, psutil's)
+# carry no architecture in their filename, so one arch would overwrite the other.
+#
+# A single zip rather than one per arch because the updater selects its asset
+# by suffix: an "-aarch64-decky.zip" would also match every x86 install's
+# "-decky.zip" and could be handed to the wrong machine.
+ARCHES=(x86_64 aarch64)
+NATIVE_DIR="${SCRIPT_DIR}/py_modules/_native"
+echo "==> Vendoring Python deps for Decky's Python ${PY_VERSIONS[*]} on ${ARCHES[*]}: ${DEPS[*]}"
 WHEEL_TMP=$(mktemp -d)
 trap 'rm -rf "$WHEEL_TMP"' EXIT
 # --platform matches wheel tags literally: it does not imply the older
@@ -44,51 +56,89 @@ trap 'rm -rf "$WHEEL_TMP"' EXIT
 # carrying manylinux2014 — so all three spellings have to be offered or the
 # resolver reports the package as simply not existing. Pure-Python wheels
 # (py3-none-any) match regardless.
-WHEEL_TAGS=(--platform manylinux_2_28_x86_64 --platform manylinux_2_17_x86_64
-            --platform manylinux2014_x86_64 --only-binary :all:)
-# Newest Python first: it has the shortest list of releases with wheels, so the
-# older Python can always match the versions it picks.
-pip download "${DEPS[@]}" --python-version 3.14 "${WHEEL_TAGS[@]}" -d "$WHEEL_TMP" --quiet
+wheel_tags() {
+    echo --platform "manylinux_2_28_$1" --platform "manylinux_2_17_$1" \
+         --platform "manylinux2014_$1" --only-binary :all:
+}
+# Newest Python on the first arch resolves the versions: it has the shortest
+# list of releases with wheels, so every other Python/arch pair can match the
+# versions it picks, and no package mixes files from two releases.
+mkdir -p "$WHEEL_TMP/${ARCHES[0]}"
+# shellcheck disable=SC2046  # wheel_tags is meant to word-split
+pip download "${DEPS[@]}" --python-version 3.14 $(wheel_tags "${ARCHES[0]}") \
+    -d "$WHEEL_TMP/${ARCHES[0]}" --quiet
 PINS=()
-for whl in "$WHEEL_TMP"/*.whl; do
+for whl in "$WHEEL_TMP/${ARCHES[0]}"/*.whl; do
     base=$(basename "$whl"); PINS+=("${base%%-*}==$(echo "$base" | cut -d- -f2)")
 done
-pip download "${PINS[@]}" --python-version 3.11 "${WHEEL_TAGS[@]}" -d "$WHEEL_TMP" --quiet
+for arch in "${ARCHES[@]}"; do
+    mkdir -p "$WHEEL_TMP/$arch"
+    for py in "${PY_VERSIONS[@]}"; do
+        [ "$arch" = "${ARCHES[0]}" ] && [ "$py" = 3.14 ] && continue
+        # shellcheck disable=SC2046
+        pip download "${PINS[@]}" --python-version "$py" $(wheel_tags "$arch") \
+            -d "$WHEEL_TMP/$arch" --quiet
+    done
+done
 
+# Rebuilt from scratch: a package dropped from DEPS must not linger in the zip.
+rm -rf "$NATIVE_DIR"
 shopt -s nullglob
-WHEELS=("$WHEEL_TMP"/*.whl)
-[ ${#WHEELS[@]} -gt 0 ] || { echo "ERROR: pip downloaded no wheels" >&2; exit 1; }
-for whl in "${WHEELS[@]}"; do
-    # -o: later wheels never conflict, but re-running the build over an existing
-    # py_modules must overwrite rather than prompt.
-    unzip -q -o "$whl" -d "${SCRIPT_DIR}/py_modules" -x '*.dist-info/RECORD'
-    echo "    $(basename "$whl")"
+for arch in "${ARCHES[@]}"; do
+    WHEELS=("$WHEEL_TMP/$arch"/*.whl)
+    [ ${#WHEELS[@]} -gt 0 ] || { echo "ERROR: pip downloaded no $arch wheels" >&2; exit 1; }
+    for whl in "${WHEELS[@]}"; do
+        # The platform tag is the wheel filename's last field.
+        plat=$(basename "$whl" .whl); plat=${plat##*-}
+        if [ "$plat" = any ]; then dest="${SCRIPT_DIR}/py_modules"; else dest="$NATIVE_DIR/$arch"; fi
+        mkdir -p "$dest"   # unzip creates only the last path component
+        # -o: the same pure wheel arrives once per arch, and re-running the build
+        # over an existing py_modules must overwrite rather than prompt.
+        unzip -q -o "$whl" -d "$dest" -x '*.dist-info/RECORD'
+        echo "    $arch: $(basename "$whl")"
+    done
+done
+# Builds before _native/ existed unpacked platform packages straight into
+# py_modules/. A leftover copy there would ride along in the zip as dead
+# weight, so clear anything _native/ now owns.
+for entry in "$NATIVE_DIR"/*/*; do
+    rm -rf "${SCRIPT_DIR}/py_modules/$(basename "$entry")"
 done
 shopt -u nullglob
 
 # A Decky whose Python has no matching extension runs without covers and stores
-# credentials in plain text, and nothing fails loudly. So fail here.
-for py in 311 314; do
-    for pattern in "PIL/_imaging.cpython-$py-*" "_cffi_backend.cpython-$py-*"; do
-        compgen -G "${SCRIPT_DIR}/py_modules/$pattern" >/dev/null || {
-            echo "ERROR: py_modules has no $pattern" >&2; exit 1; }
+# credentials in plain text, and nothing fails loudly — and on an arch with no
+# psutil at all, the sync engine fails to import. So fail here, for every
+# Python on every arch.
+for arch in "${ARCHES[@]}"; do
+    for d in PIL pillow.libs psutil cryptography; do
+        [ -e "$NATIVE_DIR/$arch/$d" ] || {
+            echo "ERROR: py_modules/_native/$arch/$d missing after vendoring" >&2; exit 1; }
+    done
+    for py in 311 314; do
+        for pattern in "PIL/_imaging.cpython-$py-$arch-*" "_cffi_backend.cpython-$py-$arch-*"; do
+            compgen -G "$NATIVE_DIR/$arch/$pattern" >/dev/null || {
+                echo "ERROR: py_modules/_native/$arch has no $pattern" >&2; exit 1; }
+        done
     done
 done
 
 # Prove the vendored tree is complete before it is packaged. The pure-Python
 # packages are imported for real, which is what catches a missing transitive
-# dependency. The cp311 binary wheels can only be imported when the build
-# machine is itself on 3.11 (CI pins that deliberately); anywhere else they are
-# checked as files, since a 3.12 interpreter cannot load a cp311 .so at all.
-for d in PIL pillow.libs psutil cryptography; do
-    [ -e "${SCRIPT_DIR}/py_modules/$d" ] || {
-        echo "ERROR: py_modules/$d missing after vendoring" >&2; exit 1; }
-done
-PYTHONPATH="${SCRIPT_DIR}/py_modules" python3 - <<'PYCHECK'
-import sys
+# dependency. The binary wheels can only be imported when the build machine
+# matches one of the targets — Python 3.11 or 3.14 (CI pins 3.11 deliberately)
+# on one of ARCHES; everything else was checked as files above.
+HOST_ARCH=$(uname -m)
+NATIVE_HOST="$NATIVE_DIR/$HOST_ARCH" \
+PYTHONPATH="${SCRIPT_DIR}/py_modules:$NATIVE_DIR/$HOST_ARCH" python3 - <<'PYCHECK'
+import os, sys
 missing = []
-mods = ["requests", "watchdog.observers", "qrcode", "socketio", "websocket"]
-if sys.version_info[:2] in ((3, 11), (3, 14)):
+# watchdog publishes per-platform wheels, so it lives in _native/ too.
+mods = ["requests", "qrcode", "socketio", "websocket"]
+native_here = os.path.isdir(os.environ["NATIVE_HOST"])
+if native_here:
+    mods.append("watchdog.observers")
+if native_here and sys.version_info[:2] in ((3, 11), (3, 14)):
     mods += ["PIL.Image", "psutil", "cryptography.fernet"]
 for mod in mods:
     try:
@@ -138,6 +188,7 @@ cp "${SCRIPT_DIR}/dist/index.js.map"       "${TMP_DIR}/${PLUGIN_NAME}/dist/"
 cp -rL "${SCRIPT_DIR}/py_modules/"* "${TMP_DIR}/${PLUGIN_NAME}/py_modules/"
 # Remove unnecessary files
 rm -rf "${TMP_DIR}/${PLUGIN_NAME}/py_modules/__pycache__" "${TMP_DIR}/${PLUGIN_NAME}/py_modules/bin" "${TMP_DIR}/${PLUGIN_NAME}/py_modules/"*.dist-info \
+    "${TMP_DIR}/${PLUGIN_NAME}/py_modules/_native/"*/*.dist-info \
     "${TMP_DIR}/${PLUGIN_NAME}/py_modules/romm_sync_engine/__pycache__" \
     "${TMP_DIR}/${PLUGIN_NAME}/py_modules/ludo_app/__pycache__"
 # The artwork is package data of ludo_app now, so the `cp -rL py_modules/*`

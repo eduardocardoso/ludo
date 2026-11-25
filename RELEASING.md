@@ -1,13 +1,19 @@
 # Releasing Ludo
 
-One release carries **two** artifacts, built from the same tag:
+One release carries **three** artifacts, built from the same tag:
 
 | Front-end | Asset | Consumed by |
 |---|---|---|
-| Decky plugin | `Ludo-v<version>-decky.zip` | Decky Loader's `install_plugin` |
-| Desktop | `Ludo-v<version>-x86_64.AppImage` | `apply_appimage_update` in `decky_plugin/main.py` |
+| Decky plugin (x86_64 and aarch64) | `Ludo-v<version>-decky.zip` | Decky Loader's `install_plugin` |
+| Desktop, x86_64 | `Ludo-v<version>-x86_64.AppImage` | `apply_appimage_update` in `app/ludo_app/backend.py` |
+| Desktop, aarch64 | `Ludo-v<version>-aarch64.AppImage` | `apply_appimage_update` in `app/ludo_app/backend.py` |
 
-**The two are never released separately, and never at different versions.** There
+The Decky zip serves both architectures: compiled dependencies are vendored once
+per arch under `py_modules/_native/`. The AppImage is built once per arch, each on
+a native runner. A machine picks its AppImage by suffix, and neither suffix ends
+with the other.
+
+**They are never released separately, and never at different versions.** There
 is no such thing as an AppImage-only or Decky-only release, and no such thing as
 "desktop is on 1.0.1 while Decky is on 1.0.0". They are one product built from
 one tag: both front-ends run the same `main.py` and the same `sync_core.py`, so a
@@ -19,7 +25,7 @@ This is enforced, not just agreed:
 * `scripts/release.sh` bumps both `package.json` files in a single commit — there
   is no supported way to bump one.
 * CI fails the build if either version disagrees with the tag.
-* CI refuses to publish unless **both** assets built and are over 1 MB.
+* CI refuses to publish unless **every** asset built and is over 1 MB.
 * Even if a half-release were published, `select_release` skips releases missing
   the asset a client wants — and because it picks the semver *maximum*, that
   release would also outrank the last complete one, leaving the other front-end
@@ -37,7 +43,7 @@ scripts/verify-release.sh 1.0.0-beta.8
 ```
 
 Everything after the tag push is CI ([release.yml](.github/workflows/release.yml)):
-it builds both artifacts, refuses to publish unless both exist and are over 1 MB,
+it builds every artifact, refuses to publish unless all exist and are over 1 MB,
 marks any `-beta.N` version as a prerelease, and then re-imports the real
 `select_release` to prove the published release is reachable by the updater.
 
@@ -77,11 +83,19 @@ The AppImage updater path is `download_update` → `apply_appimage_update` →
 `romm:restart` (in [electron/main.cjs](desktop/electron/main.cjs)). Things worth
 knowing when changing anything near it:
 
-* **`artifactName` in `desktop/package.json` is a contract.** The updater matches
-  the asset by the `-x86_64.AppImage` suffix (`DESKTOP_SUFFIX` in the workflow).
-  Renaming the artifact without changing both makes every future release
-  invisible to existing installs — which cannot be fixed by a later release,
-  since old clients look for the old name.
+* **The AppImage names are a contract.** The updater matches the asset by
+  suffix: `-x86_64.AppImage` or `-aarch64.AppImage`, from the bundled Python's
+  architecture (`DESKTOP_HOST` in `desktop/backend/server.py`). The x86_64 name
+  is `artifactName` in `desktop/package.json`; the aarch64 one is set in
+  `desktop/tools/dist-appimage.sh`. `DESKTOP_SUFFIXES` in the workflow lists both.
+  Renaming an artifact without changing all of these makes every future release
+  invisible to existing installs on that arch — which cannot be fixed by a later
+  release, since old clients look for the old name.
+* **Each AppImage is built on its own architecture.** `prepare-runtime.sh`
+  installs into the bundled interpreter and imports the backend with it, so it
+  cannot cross-build. CI builds aarch64 on `ubuntu-24.04-arm`. Before swapping,
+  `apply_appimage_update` also checks the download's ELF architecture, so a
+  wrong-arch file can't replace a working install.
 * **The update is a `rename` over the running file, not a write into it.** So
   the image must live somewhere the user can write. `apply_appimage_update`
   reports this rather than failing obscurely, but it is why the recommended
@@ -200,6 +214,6 @@ the same version — it was never published, so reusing it is safe.
 previous one the max again, and clients silently fall back. Then roll forward.
 
 **A user reports "no update available".** Run
-`scripts/verify-release.sh <version>`. It resolves both assets through the
+`scripts/verify-release.sh <version>`. It resolves every asset through the
 shipping `select_release`, so it distinguishes "the release is unreachable" from
 "this client is already current".

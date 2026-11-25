@@ -108,10 +108,24 @@ export function onLegendChange(cb: () => void) {
 }
 function notifyLegend() { legendSubs.forEach((f) => f()); }
 
+// `hovered` is only updated by pointer movement, so a page opening under a
+// still cursor (a game's detail page over the cover that was clicked) left it
+// on the covered element, and the legend described a tile no longer on screen.
+// The control at the pointer now wins; null when there is none.
+function underPointer(): HTMLElement | null {
+  if (Number.isNaN(lastPointerX)) return hovered;
+  const at = document.elementFromPoint(lastPointerX, lastPointerY) as HTMLElement | null;
+  if (hovered && at && hovered.contains(at)) return hovered;
+  return at ? (at.closest(FOCUS_SELECTOR) as HTMLElement | null) : null;
+}
+
 // The element the legend should describe: whatever the pointer is over in mouse
 // mode, else the gamepad-focused element.
 export function currentLegendTarget(): HTMLElement | null {
-  if (mouseMode && hovered && document.contains(hovered)) return hovered;
+  if (mouseMode && hovered && document.contains(hovered)) {
+    const at = underPointer();
+    if (at) return at;
+  }
   // Fall back to the focused element even in mouse mode. This is what the app
   // looks like at startup: mouseMode defaults to true because no input has
   // happened yet, while the library grid has already auto-focused its first

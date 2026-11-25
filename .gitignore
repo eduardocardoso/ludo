@@ -9,6 +9,8 @@ __pycache__/
 # library that is not there, and Switch identification would fall back to
 # reading filenames on every machine but the one that ran build_sigil.sh.
 !engine/romm_sync_engine/bin/*.so
+# Builds for other architectures sit one level down (bin/aarch64/libsigil.so).
+!engine/romm_sync_engine/bin/*/*.so
 .Python
 build/AppDir/
 build/RomM-*.AppImage

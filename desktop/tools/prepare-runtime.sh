@@ -25,7 +25,17 @@ SRC_DIR="$RUNTIME/app-src"
 # Pinned so a build is reproducible; 3.11 matches the Deck's cpython-311.
 PBS_TAG="20260718"
 PBS_VER="3.11.15"
-PBS_FILE="cpython-${PBS_VER}+${PBS_TAG}-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+# The interpreter is the build machine's own architecture, not a cross target:
+# step 2 pip-installs into it and step 4 imports the backend with it, so it has
+# to run here. An aarch64 AppImage is therefore built on an aarch64 machine
+# (ubuntu-24.04-arm in CI). python-build-standalone names both arches the way
+# uname -m does.
+ARCH="$(uname -m)"
+case "$ARCH" in
+    x86_64|aarch64) ;;
+    *) echo "❌ no AppImage build for $ARCH (x86_64 and aarch64 only)"; exit 1 ;;
+esac
+PBS_FILE="cpython-${PBS_VER}+${PBS_TAG}-${ARCH}-unknown-linux-gnu-install_only_stripped.tar.gz"
 PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/${PBS_FILE//+/%2B}"
 
 echo "==> Preparing runtime in $RUNTIME"
@@ -132,13 +142,14 @@ cp -r "$DESKTOP_DIR/dist" "$SRC_DIR/desktop/dist"
 # Import the backend exactly as the packaged app will, so a missing dependency
 # fails here rather than in a shipped AppImage.
 echo "==> Verifying bundled runtime"
-( cd "$SRC_DIR/desktop/backend" && PYTHONDONTWRITEBYTECODE=1 "$PY" -c "
-import sys
+( cd "$SRC_DIR/desktop/backend" && PYTHONDONTWRITEBYTECODE=1 EXPECT_SUFFIX="-$ARCH.AppImage" "$PY" -c "
+import os, sys
 sys.path.insert(0, '.')
 import server
 from romm_sync_engine import paths, sync_core
 import ludo_app.backend
-assert server.DESKTOP_HOST.asset_suffix == '-x86_64.AppImage', 'wrong update asset'
+assert server.DESKTOP_HOST.asset_suffix == os.environ['EXPECT_SUFFIX'], \\
+    f'wrong update asset {server.DESKTOP_HOST.asset_suffix!r}'
 assert server.DESKTOP_HOST.version != '0.0.0', 'desktop version did not resolve'
 # qr_matrix swallows a missing qrcode and returns None, which would ship as a
 # pairing screen with no QR on it rather than a crash. py_modules (where the

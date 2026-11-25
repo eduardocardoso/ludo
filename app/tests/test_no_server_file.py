@@ -158,3 +158,21 @@ async def test_region_order_override(b):
     assert (await b.set_region_order([]))['follow'] is True
     r = await b.get_region_order()
     assert r['follow'] and r['order'][0] == 'Japan'
+
+
+async def test_picker_does_not_count_this_version_for_a_variant_download(b):
+    # Only the Italian version is on disk; downloading it marked the game
+    # downloaded under the variant's path. The main (USA) row is still absent.
+    g = dict(GOOD, sibling_roms=[{'id': 6}], is_downloaded=True, local_path='/roms/ts2-it.chd',
+             _variant_downloads={'6': {'local_path': '/roms/ts2-it.chd'}})
+    b._games_index = lambda: {9: g}
+    r = await b.get_local_siblings(9)
+    assert r['downloaded_ids'] == [6]
+
+
+async def test_picker_counts_this_version_once_its_own_file_is_here(b):
+    g = dict(GOOD, sibling_roms=[{'id': 6}], is_downloaded=True, local_path='/roms/ts2-us.chd',
+             _variant_downloads={'6': {'local_path': '/roms/ts2-it.chd'}})
+    b._games_index = lambda: {9: g}
+    r = await b.get_local_siblings(9)
+    assert sorted(r['downloaded_ids']) == [6, 9]

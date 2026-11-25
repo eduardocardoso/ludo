@@ -15,7 +15,7 @@
     "electron": "npm run build && node electron/launch.cjs",
     "electron:dev": "node electron/launch.cjs --dev",
     "prepare-runtime": "bash tools/prepare-runtime.sh",
-    "dist": "npm run build && npm run prepare-runtime && electron-builder --linux AppImage"
+    "dist": "npm run build && npm run prepare-runtime && bash tools/dist-appimage.sh"
   },
   "devDependencies": {
     "@fontsource-variable/inter": "^5.3.0",

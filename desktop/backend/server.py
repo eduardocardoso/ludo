@@ -22,6 +22,7 @@ import json
 import logging
 import mimetypes
 import os
+import platform
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -54,9 +55,15 @@ DESKTOP_DIR = Path(__file__).resolve().parents[1]
 # want: Decky Loader unpacks a zip, the desktop swaps a single AppImage file.
 # The version comes from desktop/package.json, not the plugin's, so update
 # comparisons use the number this build actually ships as.
+#
+# The AppImage is built once per architecture, and the bundled interpreter
+# is that architecture's, so its machine names the asset to update from.
+# x86_64 keeps the name every existing install already looks for.
+DESKTOP_ARCH = {"amd64": "x86_64", "arm64": "aarch64"}.get(
+    platform.machine().lower(), platform.machine().lower())
 DESKTOP_HOST = HostProfile(
     version=read_package_version(DESKTOP_DIR / "package.json"),
-    asset_suffix="-x86_64.AppImage",
+    asset_suffix=f"-{DESKTOP_ARCH}.AppImage",
     download_dir=Path.home() / ".config" / "ludo" / "updates",
     name="desktop",
 )

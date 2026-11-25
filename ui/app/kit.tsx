@@ -275,8 +275,10 @@ export function PlatformIcon({ slug, fsSlug, size, onTone }: { slug?: string | n
 // `armed` inverts the danger combination — the tinted-background/red-text row
 // becomes a solid red fill with light text, so a half-pressed destructive row
 // reads as live at a glance rather than as another idle menu entry.
-export function UserMenuRow({ icon, label, danger, armed, disabled, onSelect, trailing }:
-  { icon: any; label: string; danger?: boolean; armed?: boolean; disabled?: boolean; onSelect: () => void; trailing?: any }) {
+export function UserMenuRow({ icon, label, danger, armed, disabled, onSelect, trailing, okHint }:
+  { icon: any; label: any; danger?: boolean; armed?: boolean; disabled?: boolean; onSelect: () => void; trailing?: any;
+    // The bottom bar's label for A on this row; "Select" when absent.
+    okHint?: string }) {
   const [hot, setHot] = useState(false);
   const fg = disabled ? V2.fgFaint : (armed ? '#fff' : (danger ? V2.danger : V2.fg));
   const bg = armed
@@ -284,6 +286,7 @@ export function UserMenuRow({ icon, label, danger, armed, disabled, onSelect, tr
     : ((hot && !disabled) ? (danger ? 'rgba(255,80,80,0.12)' : V2.surfaceHover) : 'transparent');
   return (
     <Focusable noFocusRing onActivate={() => !disabled && onSelect()} onClick={() => !disabled && onSelect()}
+      onOKActionDescription={okHint}
       onFocus={() => setHot(true)} onBlur={() => setHot(false)}
       onMouseEnter={() => setHot(true)} onMouseLeave={() => setHot(false)}
       style={{
@@ -473,18 +476,66 @@ export function V2Button({ children, onClick, variant = 'tonal', color, disabled
 //     primary Download (overlay-emphasis tokens).
 //   • surface, icon-only  → circular translucent-grey glass button matching the
 //     page background (RTag tokens); used for Delete / secondary actions.
+// Tap-or-hold on A / Enter: a hold (500ms) runs onHold, a shorter press runs
+// onTap on release. Steam's onActivate fires on the PRESS edge, so with a hold
+// action the tap has to wait for the release instead; onActivate returns true
+// when it took the press. Without onHold every handler is a no-op.
+export function useHoldPress(onHold: (() => void) | undefined, onTap: () => void) {
+  const timer = useRef<any>(null);
+  const fired = useRef(false);
+  const start = () => {
+    fired.current = false;
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => { timer.current = null; fired.current = true; onHold?.(); }, 500);
+  };
+  const release = () => {
+    if (!timer.current) return;
+    clearTimeout(timer.current); timer.current = null;
+    if (!fired.current) onTap();
+  };
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  return {
+    onButtonDown: (e: any) => { if (onHold && e?.detail?.button === GamepadButton.OK) start(); },
+    onButtonUp: (e: any) => { if (onHold && e?.detail?.button === GamepadButton.OK) release(); },
+    onActivate: (e: any): boolean => {
+      if (!onHold) return false;
+      // The keyboard has no onButtonUp behind it: Enter / Space time the hold
+      // on their own key release. A pointer click (detail > 0) is a tap.
+      if (e?.type === 'keydown') {
+        if (e.repeat || timer.current) return true;
+        const key = e.key;
+        const up = (ke: KeyboardEvent) => {
+          if (ke.key !== key) return;
+          window.removeEventListener('keyup', up, true);
+          release();
+        };
+        window.addEventListener('keyup', up, true);
+        start();
+        return true;
+      }
+      if (typeof e?.detail === 'number' && e.detail > 0) return false;
+      // The pad's A: onButtonDown / onButtonUp already handle it.
+      return true;
+    },
+  };
+}
+
 // `danger` is a filled-danger pill for the delete-confirm step. Pill radius
 // throughout; controller focus paints a brand ring + slight scale.
 export function GameActionButton({ icon, label, onClick, variant = 'surface', accent, disabled, progress, progressColor,
-  onOptionsButton, optionsHint, focusRef, onFocused, onBlurred }:
+  onOptionsButton, optionsHint, focusRef, onFocused, onBlurred, onHold, okHint }:
   {
     icon: any; label?: string; onClick: () => void;
     variant?: 'emphasized' | 'surface' | 'danger'; accent?: 'danger'; disabled?: boolean;
     progress?: number | null; progressColor?: string; onOptionsButton?: () => void; optionsHint?: boolean;
     focusRef?: React.MutableRefObject<any>;
     onFocused?: () => void; onBlurred?: () => void;
+    // Holding A / Enter does this instead of onClick (a tap still clicks);
+    // okHint is the bottom bar's label for A, e.g. "Download (hold: Regions)".
+    onHold?: () => void; okHint?: string;
   }) {
   const [active, setActive] = useState(false);
+  const hold = useHoldPress(onHold && !disabled ? onHold : undefined, () => !disabled && onClick());
   const labelled = !!label;
   const hasProgress = typeof progress === 'number';
   const pct = hasProgress ? Math.max(0, Math.min(100, progress as number)) : 0;
@@ -547,8 +598,10 @@ export function GameActionButton({ icon, label, onClick, variant = 'surface', ac
   const glow = active ? { boxShadow: `0 0 0 2px ${ring}` } : {};
   return (
     <Focusable noFocusRing ref={focusRef}
-      onActivate={() => !disabled && onClick()}
+      onActivate={(e: any) => { if (!hold.onActivate(e)) { if (!disabled) onClick(); } }}
       onClick={() => !disabled && onClick()}
+      onButtonDown={hold.onButtonDown} onButtonUp={hold.onButtonUp}
+      onOKActionDescription={okHint}
       onOptionsButton={onOptionsButton ? () => !disabled && onOptionsButton() : undefined}
       onOptionsActionDescription={onOptionsButton ? 'Select disc' : undefined}
       onFocus={() => { setActive(true); onFocused?.(); }} onBlur={() => { setActive(false); onBlurred?.(); }}
@@ -1279,7 +1332,9 @@ export function PickerModal({ title, message, children, items, onDismiss, closeM
   // Shown between the message and the rows (e.g. a QR code).
   children?: any;
   // keepOpen: the row acts inside the modal (e.g. retry) instead of closing it.
-  items: { key: string | number; label: string; active?: boolean; danger?: boolean; keepOpen?: boolean; onSelect: () => void }[];
+  // icon replaces the active check; trailing sits after the label.
+  items: { key: string | number; label: any; active?: boolean; danger?: boolean; keepOpen?: boolean;
+    icon?: any; trailing?: any; okHint?: string; onSelect: () => void }[];
   onDismiss?: () => void;
   closeModal?: () => void;
 }) {
@@ -1307,7 +1362,10 @@ export function PickerModal({ title, message, children, items, onDismiss, closeM
         `}</style>
         <div onClick={dismiss} style={{ position: 'absolute', inset: 0 }} />
         <Focusable noFocusRing autoFocus ref={panelRef} flow-children="vertical" style={{
-          position: 'relative', width: message ? '420px' : '340px', maxWidth: '90vw', boxSizing: 'border-box',
+          // Rows wider than the default (a region with its language flags)
+          // widen the panel instead of wrapping, up to a limit.
+          position: 'relative', width: message ? '420px' : 'max-content', minWidth: '340px',
+          maxWidth: message ? '90vw' : 'min(520px, 90vw)', boxSizing: 'border-box',
           fontFamily: V2.font, color: V2.fg, padding: '8px',
           display: 'flex', flexDirection: 'column',
           background: 'linear-gradient(180deg, rgba(20,20,30,0.7) 0%, rgba(10,10,18,0.78) 100%)',
@@ -1328,8 +1386,8 @@ export function PickerModal({ title, message, children, items, onDismiss, closeM
           <div style={{ height: '1px', background: V2.border, margin: '0 4px 4px' }} />
           {items.map((it) => (
             <UserMenuRow key={it.key}
-              icon={it.active ? <FaCheck size={14} style={{ color: V2.brand }} /> : null}
-              label={it.label} danger={it.danger}
+              icon={it.icon !== undefined ? it.icon : it.active ? <FaCheck size={14} style={{ color: V2.brand }} /> : null}
+              label={it.label} danger={it.danger} trailing={it.trailing} okHint={it.okHint}
               onSelect={() => { if (!it.keepOpen) closeModal?.(); it.onSelect(); }} />
           ))}
         </Focusable>

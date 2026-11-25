@@ -5,7 +5,7 @@ import { FaBan, FaWrench, FaChevronDown, FaChevronRight, FaBookmark, FaBoxOpen, 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { V2Focus, V2_FOCUS_STYLE, v2Page } from "../focus";
 import { peekDetail, storeDetail } from "../detailcache";
-import { deleteGame, downloadGame, getGameDetail, refreshGameMetadata, getLocalDiscs, getRaEarned, getSaveHistory, getSaveScreenshot, restoreSaveVersion, getSwitchAddOns, setSwitchAddOnEnabled, setSwitchDlc, setSwitchUpdate, fetchSwitchAddOn, getGamePlayTime } from "../rpc";
+import { deleteGame, downloadGame, getGameDetail, refreshGameMetadata, getLocalDiscs, getRaEarned, getSaveHistory, getSaveScreenshot, restoreSaveVersion, getLocalSiblings, getSwitchAddOns, setSwitchAddOnEnabled, setSwitchDlc, setSwitchUpdate, fetchSwitchAddOn, getGamePlayTime } from "../rpc";
 import { _libRefreshListeners, _switchModsChangedListeners } from "../events";
 import { _forceGamepadFocus, _gpFocusEl, playSteamSound, useAutoFocus } from "../shell";
 import { Bumper, GameActionButton, PlatformIcon, V2Button, V2CardRow, V2SettingsRow, V2Switch, MODAL_SCRIM_INSET, SectionHeading, ToastCover, useRommImage, useArmedPress} from "../kit";
@@ -21,7 +21,7 @@ import { MdVerified } from "react-icons/md";
 import { getLibGameHolder, getLibGameOrigin, libCacheSetDownloaded, openGameById} from "../libcache";
 import { cannotLaunch, runLaunch, useResumable } from "../launch";
 import { standaloneFor, useEmulatorStatus } from "../emulator";
-import { LocalDisc, discDisplayLabel, openDiscPicker } from "../tiles";
+import { LocalDisc, discDisplayLabel, openDiscPicker, openRegionPicker } from "../tiles";
 import { useSaveActivityFor } from "../status";
 import { SwitchDlcModal, addOnLabel, fetchLabel, openUpdatePicker, runEdenChange, useFetchProgress } from "../switchAddOns";
 import { SwitchModPackagesSection } from "../switchModPackages";
@@ -1611,13 +1611,17 @@ export function GameDetailPage() {
     _libRefreshListeners.add(load);
     return () => { alive = false; _libRefreshListeners.delete(load); };
   }, [game?.rom_id]);
-  const dlProg = useDownloadProgress(game?.rom_id ?? -1, busy === 'download');
+  // The version downloading: the game itself, or a regional sibling picked
+  // from the region picker. Progress, cancel and the spinner follow it.
+  const [dlRomId, setDlRomId] = useState<number | null>(null);
+  const dlId = dlRomId ?? game?.rom_id ?? -1;
+  const dlProg = useDownloadProgress(dlId, busy === 'download');
   const dlPct = dlProg?.percent ?? null;
   const extracting = dlProg?.state === 'extracting';
-  const globalDownloading = useIsDownloading(game?.rom_id ?? -1);
+  const globalDownloading = useIsDownloading(dlId);
   const downloading = busy === 'download' || globalDownloading;
   const smoothPct = useSmoothNumber(dlPct, downloading);
-  const cancelArm = useArmedPress(() => { if (game) cancelDownload(game.rom_id); });
+  const cancelArm = useArmedPress(() => { if (game) cancelDownload(dlId); });
   // Nothing to launch into: Play dims rather than disappearing, and says why
   // when focused. Downloading stays available — building a library before you
   // own an emulator is legitimate.
@@ -1709,7 +1713,10 @@ export function GameDetailPage() {
       // a game that is on disk. The registry cannot fail and is the reason the
       // library tiles heal correctly today.
       if (game && _dlSucceeded.has(game.rom_id)) setIsDownloaded(true);
-      load();
+      // Quietly: the page is already showing this game, and the loader would
+      // swap its tab for "Loading details…" for as long as RomM takes to
+      // answer, seconds right after a download.
+      load(true);
     }
     prevDownloading.current = downloading;
   }, [downloading]);
@@ -1736,22 +1743,29 @@ export function GameDetailPage() {
   const pickableDiscs = discs.filter((d) => !d.is_m3u);
   const isMultiDisc = pickableDiscs.length > 1;
 
-  const doDownload = async () => {
-    if (!game || !claimDownloadStart(game.rom_id)) return;
+  // `romId` is a regional sibling picked from the region picker; the game
+  // itself when absent. Either way the game counts as downloaded after.
+  const doDownload = async (romId?: number): Promise<boolean> => {
+    if (!game) return false;
+    const target = romId ?? game.rom_id;
+    if (!claimDownloadStart(target)) return false;
     // Before the busy/active flags: they repaint the button as "Downloading…",
     // and nothing is downloading until this modal has been answered.
-    await maybePromptSwitchFirmware(game.rom_id);
+    await maybePromptSwitchFirmware(target);
     setBusy('download');
-    _setDlActive(game.rom_id, true, detail?.name || game.name);
-    releaseDownloadStart(game.rom_id);
+    setDlRomId(target);
+    _setDlActive(target, true, detail?.name || game.name);
+    releaseDownloadStart(target);
+    let ok = false;
     try {
-      const start = await downloadGame(game.rom_id);
+      const start = await downloadGame(target);
       if (!start?.success) {
         toaster.toast({ title: 'Download failed', body: start?.message || 'Unknown error' });
-        return;
+        return false;
       }
-      const res = await awaitDownload(game.rom_id);
+      const res = await awaitDownload(target);
       if (res.ok) {
+        ok = true;
         if (!res.warning) toaster.toast({
           title: 'Downloaded', body: detail?.name || game.name,
           logo: <ToastCover romId={game.rom_id} hasCover={game.has_cover} />,
@@ -1773,9 +1787,35 @@ export function GameDetailPage() {
     } catch (e) {
       toaster.toast({ title: 'Download failed', body: String(e) });
     } finally {
-      _setDlActive(game.rom_id, false);
+      _setDlActive(target, false);
+      setDlRomId(null);
       setBusy(null);
     }
+    return ok;
+  };
+
+  // Hold A on Download / Play: pick the version (region) to get or start.
+  const isMultiRegion = !!game?.region_count && game.region_count > 1;
+  const openRegions = async () => {
+    if (!game) return;
+    let ids = new Set<number>(), noFile = new Set<number>(), last: number | undefined;
+    try {
+      const r = await getLocalSiblings(game.rom_id);
+      if (r?.success) {
+        ids = new Set<number>(r.downloaded_ids || []);
+        noFile = new Set<number>(r.no_file_ids || []);
+        last = r.last || undefined;
+      }
+    } catch { /* picker still opens, every version reads not downloaded */ }
+    openRegionPicker(game.rom_id, detail?.name || game.name, game.sibling_roms || [], ids, last,
+      async (picked) => {
+        const have = ids.has(picked);
+        // As on the library tile: a version not here yet downloads, then starts.
+        if (!have && !(await doDownload(picked))) return;
+        await runLaunch(game.rom_id, detail?.name || game.name, null, undefined, setBusy, undefined,
+          picked === game.rom_id ? null : picked);
+      },
+      game.file_name, ids.has(game.rom_id), noFile);
   };
 
   const doLaunch = async (disc?: string | null, label?: string) => {
@@ -2057,7 +2097,9 @@ export function GameDetailPage() {
               <GameActionButton variant="emphasized" focusRef={ctaRef} disabled label="No file" icon={<FaBan size={15} />}
                 onClick={() => {}} />
             ) : !isDownloaded ? (
-              <GameActionButton variant="emphasized" focusRef={ctaRef} disabled={!!busy || downloading} onClick={doDownload}
+              <GameActionButton variant="emphasized" focusRef={ctaRef} disabled={!!busy || downloading} onClick={() => { void doDownload(); }}
+                onHold={isMultiRegion ? openRegions : undefined}
+                okHint={downloading ? undefined : isMultiRegion ? 'Download (hold: Regions)' : 'Download'}
                 progress={downloading ? (dlProg?.exact ?? dlPct ?? 0) : undefined}
                 label={downloading
                   ? (extracting ? `${dlProg?.message || 'Extracting…'}${dlPct != null ? ` ${padPct(dlPct)}%` : ''}`
@@ -2072,12 +2114,15 @@ export function GameDetailPage() {
               <GameActionButton accent={cancelArm.armed ? undefined : 'danger'}
                 variant={cancelArm.armed ? 'danger' : 'surface'}
                 onClick={cancelArm.press} onBlurred={cancelArm.disarm}
+                okHint={cancelArm.armed ? 'Confirm cancel' : 'Cancel download'}
                 icon={<FaTimes size={14} />} />
             )}
             {!isDownloaded ? null : !confirmDelete ? (
               <>
                 <GameActionButton variant="emphasized" focusRef={ctaRef} disabled={!!busy || noEmulator}
                   onClick={() => doLaunch()}
+                  onHold={isMultiRegion && !noEmulator ? openRegions : undefined}
+                  okHint={noEmulator ? undefined : `${resumable ? 'Resume' : 'Play'}${isMultiRegion ? ' (hold: Regions)' : ''}`}
                   onFocused={() => setCtaFocused(true)} onBlurred={() => setCtaFocused(false)}
                   onOptionsButton={isMultiDisc && !noEmulator ? openDiscMenu : undefined}
                   optionsHint={isMultiDisc && !noEmulator}
@@ -2092,7 +2137,7 @@ export function GameDetailPage() {
                       : 'No emulator installed — install RetroArch from Home to play.'}
                   </span>
                 )}
-                <GameActionButton variant="surface" accent="danger" onClick={() => setConfirmDelete(true)}
+                <GameActionButton variant="surface" accent="danger" onClick={() => setConfirmDelete(true)} okHint="Delete"
                   icon={<FaTrash size={15} />} />
                 {/* Sits beside Play rather than replacing it: a save going up
                     doesn't stop you launching again, and swapping the CTA out
@@ -2109,12 +2154,12 @@ export function GameDetailPage() {
               </>
             ) : (
               <>
-                <GameActionButton variant="danger" disabled={!!busy} onClick={doDelete}
+                <GameActionButton variant="danger" disabled={!!busy} onClick={doDelete} okHint="Confirm delete"
                   label={busy === 'delete' ? 'Deleting…' : orphan ? 'Delete for good' : 'Confirm delete'}
                   icon={busy === 'delete'
                     ? <FaSync size={15} style={{ animation: 'spin 1s linear infinite' }} />
                     : <FaTrash size={15} />} />
-                <GameActionButton variant="surface" onClick={() => setConfirmDelete(false)}
+                <GameActionButton variant="surface" onClick={() => setConfirmDelete(false)} okHint="Cancel"
                   icon={<FaTimes size={16} />} />
                 {/* Deleting a normal game is undoable — it is still on RomM. For
                     an orphan this local copy is the last one, so the confirm

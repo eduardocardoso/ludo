@@ -13,6 +13,7 @@ HostProfile. Everything else belongs in the backend.
 import ctypes
 import logging
 import os
+import platform
 import sys
 from pathlib import Path
 
@@ -23,11 +24,24 @@ HERE = Path(__file__).parent
 # so on-device these are real directories.
 sys.path.insert(0, str(HERE / "py_modules"))
 
+# Packages with compiled extensions are vendored once per architecture, under
+# py_modules/_native/<arch>/ (see decky-build.sh). The arch that matters is that
+# of the Python running this file — Decky's own — so ask the interpreter.
+_ARCH = {"amd64": "x86_64", "arm64": "aarch64"}.get(
+    platform.machine().lower(), platform.machine().lower())
+_native = HERE / "py_modules" / "_native" / _ARCH
+if _native.is_dir():
+    sys.path.insert(0, str(_native))
+else:
+    # The engine imports psutil at module scope, so this is fatal in effect;
+    # say why while it is still easy to see.
+    logging.error(f"Ludo has no native modules for {_ARCH}; looked in {_native}")
+
 # Preload Pillow's bundled shared libraries. Decky Loader is a PyInstaller
-# AppImage running its own Python 3.11, and the .so files in the vendored wheel
+# AppImage running its own Python, and the .so files in the vendored wheel
 # can't find their dependencies unless we open them first. Must happen before
 # anything imports PIL — which the backend does at module level.
-_pillow_libs = HERE / "py_modules" / "pillow.libs"
+_pillow_libs = _native / "pillow.libs"
 if _pillow_libs.exists():
     try:
         for _lib in sorted(_pillow_libs.glob("*.so*")):

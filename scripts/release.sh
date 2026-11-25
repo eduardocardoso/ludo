@@ -142,6 +142,6 @@ git push origin HEAD
 git push origin "v$VERSION"
 
 echo
-echo "tagged v$VERSION and pushed. CI is building both artifacts."
+echo "tagged v$VERSION and pushed. CI is building every artifact."
 echo "  watch:  gh run watch \$(gh run list --workflow=release.yml --limit 1 --json databaseId -q '.[0].databaseId')"
 echo "  verify: scripts/verify-release.sh $VERSION"

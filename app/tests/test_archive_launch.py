@@ -112,3 +112,36 @@ def test_arcade_variant_download_finds_its_slug(backend, tmp_path):
     archive = arcade_zip(tmp_path / 'dkong.zip')
     assert backend._maybe_unzip_download(archive, 7) == archive
     assert archive.is_file()
+
+
+# Apotris 4.0.2's GBA release zip: the game, a base ROM for the build scripts,
+# Linux/Windows tools and audio samples. Ludo unpacks it (two .gba), and the
+# folder used to boot whatever sorted first: tools/ape.aarch64.
+APOTRIS = ['Apotris.gba', 'README.txt', 'LINUX_or_MAC_build.sh', 'WINDOWS_build.bat',
+           'tools/Apotris-base.gba', 'tools/ape.aarch64', 'tools/ape.x86_64',
+           'tools/gbfs.exe', 'tools/buildSoundbank.py', 'audio/clear.wav',
+           'audio/MENU_a_menu.it', 'audio/GAME_b_oh_my_god.mod', 'license/LICENSE.zlib.txt']
+
+
+def apotris(root):
+    for name in APOTRIS:
+        touch(root / name)
+    return root
+
+
+def test_homebrew_kit_boots_the_platforms_rom(backend, tmp_path):
+    game = apotris(tmp_path / 'roms' / 'gba' / 'Apotris')
+    want = str(game / 'Apotris.gba')
+    assert backend._resolve_launch_path(str(game), platform_slug='gba') == want
+    # The platform read off the download folder when the caller has none.
+    assert backend._resolve_launch_path(str(game)) == want
+    # One game, so no version picker on the tile.
+    assert _detect_multi_disc(game, True) == (False, 1)
+
+
+def test_regional_variants_still_offer_a_pick(backend, tmp_path):
+    folder = tmp_path / 'roms' / 'gba' / 'Pokemon'
+    touch(folder / 'Pokemon (USA).gba')
+    touch(folder / 'Pokemon (Europe).gba')
+    touch(folder / 'notes.txt')
+    assert _detect_multi_disc(folder, True) == (True, 2)

@@ -30,4 +30,5 @@ include = ["romm_sync_engine*"]
 # in the Decky zip, and silently absent from the AppImage, where the only
 # symptom is Switch identification quietly falling back to reading filenames.
 [tool.setuptools.package-data]
-romm_sync_engine = ["bin/*.so", "bin/README.md"]
+# bin/*/*.so: builds for other architectures, e.g. bin/aarch64/libsigil.so.
+romm_sync_engine = ["bin/*.so", "bin/*/*.so", "bin/README.md"]

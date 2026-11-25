@@ -53,6 +53,8 @@ cli/*
 cli/decky
 
 # Vendored Python dependencies in py_modules
+# Platform wheels, one directory per arch (see decky-build.sh).
+py_modules/_native/
 py_modules/bin/
 py_modules/certifi/
 py_modules/certifi-*.dist-info/
